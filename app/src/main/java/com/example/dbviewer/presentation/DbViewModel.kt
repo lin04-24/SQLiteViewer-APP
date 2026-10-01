@@ -1,0 +1,277 @@
+package com.example.dbviewer.presentation
+
+import android.net.Uri
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import com.example.dbviewer.data.ColumnInfo
+import com.example.dbviewer.data.DbObject
+import com.example.dbviewer.data.DbRepository
+import com.example.dbviewer.data.DbSession
+import com.example.dbviewer.data.DdlItem
+import com.example.dbviewer.data.GridRow
+import com.example.dbviewer.data.IndexInfo
+import com.example.dbviewer.data.PagedRows
+import com.example.dbviewer.data.RowCount
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+data class HistoryEntry(val sql: String, val at: Long, val elapsedMs: Long?, val rowCount: Int?, val error: String?)
+
+class DbViewModel(private val repo: DbRepository) : ViewModel() {
+
+    data class UiState(
+        val title: String = "SQLite Viewer",
+        val session: DbSession? = null,
+        val objects: List<DbObject> = emptyList(),
+        val tables: List<String> = emptyList(),
+        val selectedTable: String? = null,
+        val columns: List<ColumnInfo> = emptyList(),
+        val indexes: List<IndexInfo> = emptyList(),
+        val ddl: List<DdlItem> = emptyList(),
+        val rows: List<GridRow> = emptyList(),
+        val totalRows: Long = 0L,
+        val totalExact: Boolean = true,
+        val pageIndex: Int = 0,
+        val pageSize: Int = DEFAULT_PAGE_SIZE,
+        val hasNextPage: Boolean = false,
+        val selection: Set<Int> = emptySet(),
+        val loading: Boolean = false,
+        val schemaLoading: Boolean = false,
+        val error: String? = null,
+        val objectFilter: String = "",
+        val sqlDraft: String = DEFAULT_SQL,
+        val queryColumns: List<String> = emptyList(),
+        val queryRows: List<List<String?>> = emptyList(),
+        val queryElapsedMs: Long? = null,
+        val queryTruncated: Boolean = false,
+        val queryError: String? = null,
+        val queryRunning: Boolean = false,
+        val queryRan: Boolean = false,
+        val history: List<HistoryEntry> = emptyList(),
+    ) {
+        val pageCount: Int get() = if (totalRows <= 0) 1 else (((totalRows - 1) / pageSize) + 1).toInt().coerceAtLeast(1)
+        val firstRowNumber: Int get() = if (rows.isEmpty()) 0 else pageIndex * pageSize + 1
+        val lastRowNumber: Int get() = pageIndex * pageSize + rows.size
+        val browserObjects: List<DbObject> get() = filteredObjects.filter { it.kind.equals("table", true) || it.kind.equals("view", true) }
+        val secondaryObjects: List<DbObject> get() = filteredObjects.filterNot { it.kind.equals("table", true) || it.kind.equals("view", true) }
+        val filteredObjects: List<DbObject>
+            get() = if (objectFilter.isBlank()) objects else objects.filter { it.name.contains(objectFilter, ignoreCase = true) }
+        /** Columns shown in the grid, i.e. everything the paging query selects. */
+        val gridColumns: List<ColumnInfo> get() = columns.filter { it.hidden == 0 }
+        val tableCount: Int get() = objects.count { it.kind.equals("table", true) }
+        val viewCount: Int get() = objects.count { it.kind.equals("view", true) }
+        val indexCount: Int get() = objects.count { it.kind.equals("index", true) }
+        val triggerCount: Int get() = objects.count { it.kind.equals("trigger", true) }
+    }
+
+    private val _state = MutableStateFlow(UiState())
+    val state = _state.asStateFlow()
+
+    private var current: DbSession? = null
+    private var openJob: Job? = null
+    private var gridJob: Job? = null
+    private var queryJob: Job? = null
+
+    fun open(uri: Uri) {
+        openJob?.cancel()
+        gridJob?.cancel()
+        current?.let { runCatching { it.close() } }
+        current = null
+        _state.value = UiState(title = uri.lastPathSegment ?: "Database", loading = true)
+        openJob = viewModelScope.launch(Dispatchers.IO) {
+            runCatching { repo.open(uri) }
+                .onSuccess { session ->
+                    current = session
+                    val objects = session.objects()
+                    _state.value = _state.value.copy(session = session, objects = objects, tables = session.tables(), loading = false, error = null)
+                    objects.firstOrNull { it.kind.equals("table", true) || it.kind.equals("view", true) }?.let { selectTable(it.name) }
+                }
+                .onFailure { _state.value = _state.value.copy(loading = false, error = it.message ?: "无法打开数据库") }
+        }
+    }
+
+    fun closeDatabase() {
+        openJob?.cancel()
+        gridJob?.cancel()
+        queryJob?.cancel()
+        current?.let { runCatching { it.close() } }
+        current = null
+        _state.value = UiState()
+    }
+
+    fun dismissError() { _state.value = _state.value.copy(error = null) }
+
+    fun selectTable(table: String) {
+        val session = _state.value.session ?: return
+        gridJob?.cancel()
+        val pageSize = _state.value.pageSize
+        _state.value = _state.value.copy(
+            selectedTable = table,
+            columns = emptyList(),
+            indexes = emptyList(),
+            ddl = emptyList(),
+            rows = emptyList(),
+            selection = emptySet(),
+            pageIndex = 0,
+            totalRows = 0L,
+            totalExact = true,
+            hasNextPage = false,
+            schemaLoading = true,
+            loading = true,
+            error = null,
+        )
+        gridJob = viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val count: RowCount = session.estimatedRowCount(table)
+                TableSnapshot(
+                    columns = session.columns(table),
+                    indexes = session.indexes(table),
+                    ddl = session.ddl(table),
+                    count = count,
+                    page = session.pageAt(table, 0, pageSize),
+                )
+            }.onSuccess { snapshot ->
+                _state.value = _state.value.copy(
+                    columns = snapshot.columns,
+                    indexes = snapshot.indexes,
+                    ddl = snapshot.ddl,
+                    totalRows = snapshot.count.value,
+                    totalExact = snapshot.count.exact,
+                    rows = snapshot.page.rows,
+                    hasNextPage = snapshot.page.hasMore,
+                    schemaLoading = false,
+                    loading = false,
+                )
+            }.onFailure { _state.value = _state.value.copy(schemaLoading = false, loading = false, error = it.message ?: "无法读取该表") }
+        }
+    }
+
+    fun clearTableSelection() {
+        gridJob?.cancel()
+        _state.value = _state.value.copy(selectedTable = null, columns = emptyList(), indexes = emptyList(), ddl = emptyList(), rows = emptyList(), selection = emptySet(), pageIndex = 0, totalRows = 0L, hasNextPage = false, loading = false)
+    }
+
+    fun loadPage(index: Int) {
+        val session = _state.value.session ?: return
+        val table = _state.value.selectedTable ?: return
+        val pageSize = _state.value.pageSize
+        val target = index.coerceAtLeast(0)
+        gridJob?.cancel()
+        _state.value = _state.value.copy(loading = true, pageIndex = target, selection = emptySet(), error = null)
+        gridJob = viewModelScope.launch(Dispatchers.IO) {
+            runCatching { session.pageAt(table, target * pageSize, pageSize) }
+                .onSuccess { page -> _state.value = _state.value.copy(rows = page.rows, hasNextPage = page.hasMore, loading = false) }
+                .onFailure { _state.value = _state.value.copy(loading = false, error = it.message ?: "无法读取数据") }
+        }
+    }
+
+    fun refresh() {
+        val session = _state.value.session ?: return
+        val table = _state.value.selectedTable ?: return
+        val state = _state.value
+        gridJob?.cancel()
+        _state.value = state.copy(loading = true, error = null)
+        gridJob = viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val count = session.estimatedRowCount(table)
+                val page: PagedRows = session.pageAt(table, state.pageIndex * state.pageSize, state.pageSize)
+                count to page
+            }.onSuccess { (count, page) ->
+                _state.value = _state.value.copy(totalRows = count.value, totalExact = count.exact, rows = page.rows, hasNextPage = page.hasMore, loading = false)
+            }.onFailure { _state.value = _state.value.copy(loading = false, error = it.message ?: "刷新失败") }
+        }
+    }
+
+    fun nextPage() { if (_state.value.hasNextPage) loadPage(_state.value.pageIndex + 1) }
+
+    fun previousPage() { if (_state.value.pageIndex > 0) loadPage(_state.value.pageIndex - 1) }
+
+    fun firstPage() { if (_state.value.pageIndex > 0) loadPage(0) }
+
+    fun lastPage() { loadPage((_state.value.pageCount - 1).coerceAtLeast(0)) }
+
+    fun setPageSize(size: Int) {
+        if (size == _state.value.pageSize) return
+        _state.value = _state.value.copy(pageSize = size)
+        loadPage(0)
+    }
+
+    fun toggleRow(position: Int) {
+        val selection = _state.value.selection
+        _state.value = _state.value.copy(selection = if (position in selection) selection - position else selection + position)
+    }
+
+    fun toggleAllOnPage() {
+        val state = _state.value
+        val pagePositions = state.rows.indices.map { state.pageIndex * state.pageSize + it }
+        if (pagePositions.isEmpty()) return
+        val selection = state.selection
+        _state.value = state.copy(selection = if (pagePositions.all { it in selection }) selection - pagePositions.toSet() else selection + pagePositions.toSet())
+    }
+
+    fun clearSelection() { _state.value = _state.value.copy(selection = emptySet()) }
+
+    fun setObjectFilter(value: String) { _state.value = _state.value.copy(objectFilter = value) }
+
+    fun setSqlDraft(text: String) { _state.value = _state.value.copy(sqlDraft = text) }
+
+    fun useHistory(sql: String) { _state.value = _state.value.copy(sqlDraft = sql) }
+
+    fun clearHistory() { _state.value = _state.value.copy(history = emptyList()) }
+
+    fun execute(sql: String = _state.value.sqlDraft) {
+        val session = _state.value.session ?: return
+        val statement = sql.trim()
+        if (statement.isEmpty()) return
+        queryJob?.cancel()
+        _state.value = _state.value.copy(sqlDraft = statement, queryRunning = true, queryRan = true, queryError = null, queryTruncated = false, queryElapsedMs = null, queryColumns = emptyList(), queryRows = emptyList())
+        queryJob = viewModelScope.launch(Dispatchers.IO) {
+            val started = System.nanoTime()
+            runCatching { session.executeReadOnly(statement) }
+                .onSuccess { result ->
+                    val elapsed = (System.nanoTime() - started) / 1_000_000
+                    _state.value = _state.value.copy(
+                        queryColumns = result.columns,
+                        queryRows = result.rows,
+                        queryTruncated = result.hasMore,
+                        queryElapsedMs = elapsed,
+                        queryRunning = false,
+                        history = (_state.value.history + HistoryEntry(statement, System.currentTimeMillis(), elapsed, result.rows.size, null)).takeLast(MAX_HISTORY),
+                    )
+                }
+                .onFailure { error ->
+                    val elapsed = (System.nanoTime() - started) / 1_000_000
+                    val message = error.message ?: "查询失败"
+                    _state.value = _state.value.copy(
+                        queryError = message,
+                        queryElapsedMs = elapsed,
+                        queryRunning = false,
+                        history = (_state.value.history + HistoryEntry(statement, System.currentTimeMillis(), elapsed, null, message)).takeLast(MAX_HISTORY),
+                    )
+                }
+        }
+    }
+
+    override fun onCleared() {
+        current?.let { runCatching { it.close() } }
+        current = null
+        super.onCleared()
+    }
+
+    private data class TableSnapshot(val columns: List<ColumnInfo>, val indexes: List<IndexInfo>, val ddl: List<DdlItem>, val count: RowCount, val page: PagedRows)
+
+    companion object {
+        const val DEFAULT_PAGE_SIZE = 100
+        private const val MAX_HISTORY = 40
+        private const val DEFAULT_SQL = "SELECT name, type FROM sqlite_master ORDER BY name"
+        val PAGE_SIZES = listOf(50, 100, 200, 500)
+        fun factory(repo: DbRepository) = object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T = DbViewModel(repo) as T
+        }
+    }
+}

@@ -1,0 +1,13 @@
+<resources>
+    <!--
+      Dark window theme: keeps the launch window dark instead of flashing white and keeps the
+      system status/navigation bar icons light, matching the dark Compose UI.
+    -->
+    <style name="Theme.SQLiteViewer" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/db_background</item>
+        <item name="android:statusBarColor">@color/db_surface</item>
+        <item name="android:navigationBarColor">@color/db_background</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>
