@@ -2,7 +2,7 @@
 
 一个完全离线运行的 Android SQLite 数据库查看器，面向手机和平板设备。应用通过系统文件选择器、系统“打开方式”或分享接收 `.db` 文件，以只读方式打开并浏览数据库结构、表数据和 SQL 查询结果。
 
-当前版本：`v0.2`  
+当前版本：`v0.3`
 最低系统：Android 8.0（API 26）  
 技术栈：Kotlin、Jetpack Compose、Material 3、Navigation Compose
 
@@ -58,6 +58,20 @@ app/src/main/java/com/example/dbviewer/
 app/build/outputs/apk/debug/SQLiteViewer.apk
 ```
 
+生成 v0.3 Release APK：
+
+```powershell
+./gradlew.bat :app:assembleRelease
+```
+
+产物路径：
+
+```text
+app/build/outputs/apk/release/SQLiteViewer.apk
+```
+
+该 APK 使用项目的 release 构建配置，启用 R8 资源压缩，并包含 ProfileInstaller 与 Baseline Profile 集成。由于仓库未配置正式发布密钥，当前 v0.3 发布 APK 使用 Android debug keystore 签名，仅用于本项目的测试分发；安装前请确认已卸载旧的同包名版本，或使用相同签名的构建进行覆盖安装。
+
 ## 测试覆盖
 
 当前单元测试覆盖：
@@ -68,9 +82,27 @@ app/build/outputs/apk/debug/SQLiteViewer.apk
 
 建议在真实设备或模拟器上继续验证 SAF 权限、分享打开、旋转恢复、损坏数据库、权限错误、加密数据库、磁盘空间不足和大规模数据库滚动性能。
 
-## 性能说明与路线
+## 性能优化（v0.3）
 
-首屏和滚动过程只保留当前数据页及其 UI 虚拟化内容，BLOB 延迟为长度摘要，查询在后台线程串行执行。`v0.2` 针对有 INTEGER PRIMARY KEY 或 `rowid` 的表启用 Keyset Pagination。首屏仍从偏移量 0 读取，之后的连续翻页通过身份列索引定位，避免扫描此前页面；无主键表、复合主键表和尾页跳转保留 LIMIT/OFFSET 回退。实际性能取决于设备、SQLite 数据规模和缓存状态，建议用真实数据库进行基准测试。
+首屏和滚动过程只保留当前数据页及其 UI 虚拟化内容，BLOB 延迟为长度摘要，查询在后台线程串行执行。针对有 INTEGER PRIMARY KEY 或 `rowid` 的表启用 Keyset Pagination；无主键表、复合主键表和尾页跳转保留 LIMIT/OFFSET 回退。
+
+v0.3 增加 Baseline Profile 和 Macrobenchmark 配置，覆盖应用启动、历史浏览、打开数据库、表切换、数据滚动、查询和导出等热路径。性能测试模块位于 [`benchmark/`](benchmark/)，详细命令、设备要求和结果说明见 [`benchmark/README.md`](benchmark/README.md)。Baseline Profile 需要连接 Android 设备或模拟器生成，Release 构建会通过 `profileinstaller` 安装已生成的 Profile。实际提升取决于设备、SQLite 数据规模和缓存状态，建议用真实数据库进行基准测试。
+
+基准测试与 Profile 生成：
+
+```powershell
+# 连接 API 28+ 设备后生成 Profile
+./gradlew.bat :benchmark:generateBaselineProfile
+
+# 运行启动或表切换 Macrobenchmark
+./gradlew.bat :benchmark:connectedCheck -Pandroid.testInstrumentationRunnerArguments.class=com.example.sqliteviewer.benchmark.StartupBenchmark
+./gradlew.bat :benchmark:connectedCheck -Pandroid.testInstrumentationRunnerArguments.class=com.example.sqliteviewer.benchmark.TableSwitchBenchmark
+```
+
+## v0.3 发布
+
+正式 APK 和校验文件发布在 GitHub Releases：
+<https://github.com/lin04-24/SQLiteViewer-APP/releases/tag/v0.3>
 
 ## 隐私
 

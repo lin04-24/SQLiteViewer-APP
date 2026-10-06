@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "SQLiteViewer"
 include(":app")
+include(":benchmark")
