@@ -87,6 +87,6 @@ class TablePreferencesStore(private val context: Context) {
     }
 
     private fun makeKey(dbPath: String, tableName: String): String {
-        return "${dbPath.hashCode()}:$tableName"
+        return "$dbPath:$tableName"
     }
 }
