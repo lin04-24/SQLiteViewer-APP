@@ -22,6 +22,17 @@ import kotlinx.coroutines.launch
 
 data class HistoryEntry(val sql: String, val at: Long, val elapsedMs: Long?, val rowCount: Int?, val error: String?)
 
+data class PageCache(
+    val pageIndex: Int,
+    val rows: List<GridRow>,
+    val hasNextPage: Boolean,
+    val hasPreviousPage: Boolean,
+    val firstId: Long?,
+    val lastId: Long?,
+    val usedKeyset: Boolean,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
 class DbViewModel(private val repo: DbRepository) : ViewModel() {
 
     data class UiState(
@@ -57,6 +68,7 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
         val queryRunning: Boolean = false,
         val queryRan: Boolean = false,
         val history: List<HistoryEntry> = emptyList(),
+        val preloadingNextPage: Boolean = false,
     ) {
         val pageCount: Int get() = if (totalRows <= 0) 1 else (((totalRows - 1) / pageSize) + 1).toInt().coerceAtLeast(1)
         val firstRowNumber: Int get() = if (rows.isEmpty()) 0 else pageIndex * pageSize + 1
@@ -80,12 +92,19 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
     private var openJob: Job? = null
     private var gridJob: Job? = null
     private var queryJob: Job? = null
+    private var preloadJob: Job? = null
+
+    // LRU 缓存：最多缓存 3 页（前一页、当前页、后一页）
+    private val pageCache = LinkedHashMap<Int, PageCache>(3, 0.75f, true)
+    private val maxCacheSize = 3
 
     fun open(uri: Uri) {
         openJob?.cancel()
         gridJob?.cancel()
+        preloadJob?.cancel()
         current?.let { runCatching { it.close() } }
         current = null
+        pageCache.clear()
         _state.value = UiState(title = uri.lastPathSegment ?: "Database", loading = true)
         openJob = viewModelScope.launch(Dispatchers.IO) {
             runCatching { repo.open(uri) }
@@ -103,8 +122,10 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
         openJob?.cancel()
         gridJob?.cancel()
         queryJob?.cancel()
+        preloadJob?.cancel()
         current?.let { runCatching { it.close() } }
         current = null
+        pageCache.clear()
         _state.value = UiState()
     }
 
@@ -113,6 +134,8 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
     fun selectTable(table: String) {
         val session = _state.value.session ?: return
         gridJob?.cancel()
+        preloadJob?.cancel()
+        pageCache.clear()
         val pageSize = _state.value.pageSize
         _state.value = _state.value.copy(
             selectedTable = table,
@@ -131,6 +154,7 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
             usingKeysetPagination = false,
             schemaLoading = true,
             loading = true,
+            preloadingNextPage = false,
             error = null,
         )
         gridJob = viewModelScope.launch(Dispatchers.IO) {
@@ -146,6 +170,15 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
             }.onSuccess { snapshot ->
                 val firstId = snapshot.page.rows.firstOrNull()?.id
                 val lastId = snapshot.page.rows.lastOrNull()?.id
+                addToCache(0, PageCache(
+                    pageIndex = 0,
+                    rows = snapshot.page.rows,
+                    hasNextPage = snapshot.page.hasMore,
+                    hasPreviousPage = false,
+                    firstId = firstId,
+                    lastId = lastId,
+                    usedKeyset = snapshot.page.usedKeyset,
+                ))
                 _state.value = _state.value.copy(
                     columns = snapshot.columns,
                     indexes = snapshot.indexes,
@@ -160,13 +193,17 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
                     usingKeysetPagination = snapshot.page.usedKeyset,
                     schemaLoading = false,
                     loading = false,
+                    preloadingNextPage = false,
                 )
+                if (snapshot.page.hasMore) preloadPage(1)
             }.onFailure { _state.value = _state.value.copy(schemaLoading = false, loading = false, error = it.message ?: "无法读取该表") }
         }
     }
 
     fun clearTableSelection() {
         gridJob?.cancel()
+        preloadJob?.cancel()
+        pageCache.clear()
         _state.value = _state.value.copy(
             selectedTable = null,
             columns = emptyList(),
@@ -181,7 +218,8 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
             firstIdOnPage = null,
             lastIdOnPage = null,
             usingKeysetPagination = false,
-            loading = false
+            loading = false,
+            preloadingNextPage = false,
         )
     }
 
@@ -190,6 +228,28 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
         val table = _state.value.selectedTable ?: return
         val pageSize = _state.value.pageSize
         val target = index.coerceAtLeast(0)
+
+        // 检查缓存
+        pageCache[target]?.let { cached ->
+            _state.value = _state.value.copy(
+                pageIndex = target,
+                rows = cached.rows,
+                hasNextPage = cached.hasNextPage,
+                hasPreviousPage = cached.hasPreviousPage,
+                firstIdOnPage = cached.firstId,
+                lastIdOnPage = cached.lastId,
+                usingKeysetPagination = cached.usedKeyset,
+                selection = emptySet(),
+                loading = false,
+                error = null
+            )
+            // 预加载下一页
+            if (cached.hasNextPage) {
+                preloadPage(target + 1)
+            }
+            return
+        }
+
         gridJob?.cancel()
         _state.value = _state.value.copy(loading = true, pageIndex = target, selection = emptySet(), error = null)
         gridJob = viewModelScope.launch(Dispatchers.IO) {
@@ -197,6 +257,18 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
                 .onSuccess { page ->
                     val firstId = page.rows.firstOrNull()?.id
                     val lastId = page.rows.lastOrNull()?.id
+
+                    // 缓存当前页
+                    addToCache(target, PageCache(
+                        pageIndex = target,
+                        rows = page.rows,
+                        hasNextPage = page.hasMore,
+                        hasPreviousPage = target > 0,
+                        firstId = firstId,
+                        lastId = lastId,
+                        usedKeyset = page.usedKeyset,
+                    ))
+
                     _state.value = _state.value.copy(
                         rows = page.rows,
                         hasNextPage = page.hasMore,
@@ -206,6 +278,11 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
                         usingKeysetPagination = page.usedKeyset,
                         loading = false
                     )
+
+                    // 预加载下一页
+                    if (page.hasMore) {
+                        preloadPage(target + 1)
+                    }
                 }
                 .onFailure { _state.value = _state.value.copy(loading = false, error = it.message ?: "无法读取数据") }
         }
@@ -216,7 +293,9 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
         val table = _state.value.selectedTable ?: return
         val state = _state.value
         gridJob?.cancel()
-        _state.value = state.copy(loading = true, error = null)
+        preloadJob?.cancel()
+        pageCache.clear()
+        _state.value = state.copy(loading = true, preloadingNextPage = false, error = null)
         gridJob = viewModelScope.launch(Dispatchers.IO) {
             runCatching {
                 val count = session.estimatedRowCount(table)
@@ -225,6 +304,15 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
             }.onSuccess { (count, page) ->
                 val firstId = page.rows.firstOrNull()?.id
                 val lastId = page.rows.lastOrNull()?.id
+                addToCache(state.pageIndex, PageCache(
+                    pageIndex = state.pageIndex,
+                    rows = page.rows,
+                    hasNextPage = page.hasMore,
+                    hasPreviousPage = state.pageIndex > 0,
+                    firstId = firstId,
+                    lastId = lastId,
+                    usedKeyset = page.usedKeyset,
+                ))
                 _state.value = _state.value.copy(
                     totalRows = count.value,
                     totalExact = count.exact,
@@ -234,7 +322,8 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
                     firstIdOnPage = firstId,
                     lastIdOnPage = lastId,
                     usingKeysetPagination = page.usedKeyset,
-                    loading = false
+                    loading = false,
+                    preloadingNextPage = false,
                 )
             }.onFailure { _state.value = _state.value.copy(loading = false, error = it.message ?: "刷新失败") }
         }
@@ -245,6 +334,22 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
         val session = _state.value.session ?: return
         val table = _state.value.selectedTable ?: return
         val state = _state.value
+        pageCache[state.pageIndex + 1]?.let { cached ->
+            _state.value = state.copy(
+                pageIndex = state.pageIndex + 1,
+                rows = cached.rows,
+                hasNextPage = cached.hasNextPage,
+                hasPreviousPage = true,
+                firstIdOnPage = cached.firstId,
+                lastIdOnPage = cached.lastId,
+                usingKeysetPagination = cached.usedKeyset,
+                selection = emptySet(),
+                loading = false,
+                error = null,
+            )
+            if (cached.hasNextPage) preloadPage(state.pageIndex + 2)
+            return
+        }
 
         // Use Keyset Pagination if available
         if (state.usingKeysetPagination && state.lastIdOnPage != null) {
@@ -255,12 +360,22 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
                     .onSuccess { page ->
                         val firstId = page.rows.firstOrNull()?.id
                         val lastId = page.rows.lastOrNull()?.id
+                        addToCache(state.pageIndex + 1, PageCache(
+                            pageIndex = state.pageIndex + 1,
+                            rows = page.rows,
+                            hasNextPage = page.hasMore,
+                            hasPreviousPage = true,
+                            firstId = firstId,
+                            lastId = lastId,
+                            usedKeyset = page.usedKeyset,
+                        ))
                         _state.value = _state.value.copy(
                             rows = page.rows,
                             hasNextPage = page.hasMore,
                             hasPreviousPage = true,
                             firstIdOnPage = firstId,
                             lastIdOnPage = lastId,
+                            usingKeysetPagination = page.usedKeyset,
                             loading = false
                         )
                     }
@@ -330,7 +445,9 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
 
     fun setPageSize(size: Int) {
         if (size == _state.value.pageSize) return
-        _state.value = _state.value.copy(pageSize = size)
+        preloadJob?.cancel()
+        pageCache.clear()
+        _state.value = _state.value.copy(pageSize = size, preloadingNextPage = false)
         loadPage(0)
     }
 
@@ -393,7 +510,62 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
     override fun onCleared() {
         current?.let { runCatching { it.close() } }
         current = null
+        pageCache.clear()
         super.onCleared()
+    }
+
+    private fun addToCache(pageIndex: Int, cache: PageCache) {
+        pageCache[pageIndex] = cache
+        // LRU 策略：移除最旧的条目
+        if (pageCache.size > maxCacheSize) {
+            val oldestKey = pageCache.keys.first()
+            pageCache.remove(oldestKey)
+        }
+    }
+
+    private fun preloadPage(pageIndex: Int) {
+        // 如果已经在缓存中或正在加载，跳过
+        if (pageCache.containsKey(pageIndex) || _state.value.preloadingNextPage) return
+
+        val session = _state.value.session ?: return
+        val table = _state.value.selectedTable ?: return
+        val pageSize = _state.value.pageSize
+        val currentState = _state.value
+        val keysetCursor = currentState.lastIdOnPage
+            ?.takeIf { currentState.usingKeysetPagination && pageIndex == currentState.pageIndex + 1 }
+
+        preloadJob?.cancel()
+        _state.value = _state.value.copy(preloadingNextPage = true)
+        preloadJob = viewModelScope.launch(Dispatchers.IO) {
+            runCatching { session.pageAt(table, pageIndex * pageSize, pageSize, keysetCursor, PageDirection.NEXT) }
+                .onSuccess { page ->
+                    val firstId = page.rows.firstOrNull()?.id
+                    val lastId = page.rows.lastOrNull()?.id
+
+                    // 缓存预加载的页面
+                    addToCache(pageIndex, PageCache(
+                        pageIndex = pageIndex,
+                        rows = page.rows,
+                        hasNextPage = page.hasMore,
+                        hasPreviousPage = pageIndex > 0,
+                        firstId = firstId,
+                        lastId = lastId,
+                        usedKeyset = page.usedKeyset,
+                    ))
+
+                    _state.value = _state.value.copy(preloadingNextPage = false)
+                }
+                .onFailure {
+                    _state.value = _state.value.copy(preloadingNextPage = false)
+                }
+        }
+    }
+
+    fun onScrollNearBottom() {
+        // 当滚动接近底部时触发预加载
+        if (_state.value.hasNextPage && !_state.value.loading && !_state.value.preloadingNextPage) {
+            preloadPage(_state.value.pageIndex + 1)
+        }
     }
 
     private data class TableSnapshot(val columns: List<ColumnInfo>, val indexes: List<IndexInfo>, val ddl: List<DdlItem>, val count: RowCount, val page: PagedRows)

@@ -26,6 +26,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -62,7 +63,10 @@ fun QueryScreen(
 ) {
     var detail by remember { mutableStateOf<GridRow?>(null) }
     val clipboard = LocalClipboardManager.current
-    val columns = remember(state.queryColumns, state.queryRows) { gridColumnsFromNames(state.queryColumns, state.queryRows) }
+    var columns by remember { mutableStateOf(emptyList<com.example.dbviewer.ui.components.GridColumn>()) }
+    LaunchedEffect(state.queryColumns, state.queryRows) {
+        columns = gridColumnsFromNames(state.queryColumns, state.queryRows)
+    }
     val rows = remember(state.queryRows) { state.queryRows.mapIndexed { index, values -> GridRow(position = index, id = null, values = values) } }
 
     Column(modifier.fillMaxSize()) {

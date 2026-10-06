@@ -57,6 +57,7 @@ fun PaginationBar(
     hasPrevious: Boolean,
     usingKeysetPagination: Boolean,
     enabled: Boolean,
+    preloading: Boolean = false,
     onPageSize: (Int) -> Unit,
     onFirst: () -> Unit,
     onPrevious: () -> Unit,
@@ -77,6 +78,14 @@ fun PaginationBar(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
+        if (preloading) {
+            Text(
+                text = "预加载中…",
+                fontSize = 10.sp,
+                color = DbColors.Accent.copy(alpha = 0.7f),
+                modifier = Modifier.padding(end = 8.dp),
+            )
+        }
         Spacer(Modifier.width(8.dp))
         PageSizeMenu(pageSize, pageSizes, enabled, onPageSize)
         Spacer(Modifier.width(6.dp))

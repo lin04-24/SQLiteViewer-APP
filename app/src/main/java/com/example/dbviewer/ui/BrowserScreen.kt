@@ -392,7 +392,13 @@ private fun DataTab(
 ) {
     var detail by remember { mutableStateOf<GridRow?>(null) }
     val clipboard = LocalClipboardManager.current
-    val columns = remember(state.columns, state.rows) { gridColumnsFromSchema(state.gridColumns, state.rows) }
+
+    // 使用 LaunchedEffect 确保列宽计算在协程中异步执行
+    var columns by remember { mutableStateOf<List<com.example.dbviewer.ui.components.GridColumn>>(emptyList()) }
+    LaunchedEffect(state.columns, state.rows) {
+        columns = gridColumnsFromSchema(state.gridColumns, state.rows)
+    }
+
     val selectedCount = state.selection.size
     val names = state.gridColumns.mapNotNull { it.name }
 
@@ -448,6 +454,7 @@ private fun DataTab(
                 onRowClick = { detail = it },
                 onRowLongClick = { clipboard.setText(AnnotatedString(buildJson(names, listOf(it.values)))) },
                 emptyText = "该表没有数据",
+                onScrollNearBottom = { vm.onScrollNearBottom() },
             )
         }
         HorizontalDivider(color = DbColors.Divider)
@@ -464,6 +471,7 @@ private fun DataTab(
             hasPrevious = state.hasPreviousPage,
             usingKeysetPagination = state.usingKeysetPagination,
             enabled = !state.loading,
+            preloading = state.preloadingNextPage,
             onPageSize = vm::setPageSize,
             onFirst = vm::firstPage,
             onPrevious = vm::previousPage,
