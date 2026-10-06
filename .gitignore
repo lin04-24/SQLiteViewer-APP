@@ -10,6 +10,11 @@ build/
 # Local machine configuration
 local.properties
 
+# Keystore files - NEVER commit these!
+*.jks
+*.keystore
+keystore.properties
+
 # Generated and temporary files
 captures/
 .externalNativeBuild/

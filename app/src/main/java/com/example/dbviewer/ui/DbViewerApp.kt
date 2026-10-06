@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -67,10 +68,17 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.sqliteviewer.BuildConfig
 import com.example.dbviewer.data.DbRepository
+import com.example.dbviewer.data.PreferencesStore
 import com.example.dbviewer.data.RecentFile
 import com.example.dbviewer.data.RecentFilesStore
+import com.example.dbviewer.data.UpdateChecker
 import com.example.dbviewer.presentation.DbViewModel
+import com.example.dbviewer.presentation.UpdateState
+import com.example.dbviewer.presentation.UpdateViewModel
+import com.example.dbviewer.ui.components.FirstTimeUpdateDialog
+import com.example.dbviewer.ui.components.UpdateDialog
 import com.example.dbviewer.ui.theme.DbColors
 import com.example.dbviewer.ui.theme.DbViewerTheme
 import kotlinx.coroutines.Dispatchers
@@ -94,9 +102,41 @@ fun DbViewerApp(initialUri: Uri?) {
     var recent by remember { mutableStateOf(recentStore.list()) }
     val vm: DbViewModel = viewModel(factory = DbViewModel.factory(DbRepository(context)))
     val state by vm.state.collectAsState()
+
+    val preferencesStore = remember(context) { PreferencesStore(context) }
+    val updateViewModel = remember(context) {
+        UpdateViewModel(
+            updateChecker = UpdateChecker(),
+            preferencesStore = preferencesStore,
+            currentVersion = BuildConfig.VERSION_NAME
+        )
+    }
+    val updateState by updateViewModel.updateState.collectAsState()
+    val showFirstTimeDialog by updateViewModel.showFirstTimeDialog.collectAsState()
+    val autoCheckEnabled by updateViewModel.autoCheckEnabled.collectAsState()
+
     var section by remember { mutableStateOf(ViewerSection.Browse) }
     var pendingExport by remember { mutableStateOf<ExportRequest?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
+    var showSettings by remember { mutableStateOf(false) }
+
+    // Check for updates on startup if enabled
+    LaunchedEffect(Unit) {
+        preferencesStore.autoCheckUpdates.collect { enabled ->
+            if (enabled) {
+                updateViewModel.checkForUpdates()
+            } else {
+                // Show first-time dialog on first launch
+                launch {
+                    preferencesStore.lastUpdateCheck.collect { lastCheck ->
+                        if (lastCheck == 0L) {
+                            updateViewModel.showFirstTimeDialog()
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     fun openDatabase(uri: Uri) {
         runCatching { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
@@ -133,6 +173,49 @@ fun DbViewerApp(initialUri: Uri?) {
 
     LaunchedEffect(initialUri) { initialUri?.let { openDatabase(it) } }
 
+    // Update Dialogs
+    if (showFirstTimeDialog) {
+        FirstTimeUpdateDialog(
+            onEnableAutoCheck = {
+                updateViewModel.setAutoCheckEnabled(true)
+                updateViewModel.dismissFirstTimeDialog()
+                updateViewModel.checkForUpdates()
+            },
+            onDismiss = {
+                updateViewModel.dismissFirstTimeDialog()
+            }
+        )
+    }
+
+    if (updateState is UpdateState.Available) {
+        val updateInfo = (updateState as UpdateState.Available).info
+        UpdateDialog(
+            updateInfo = updateInfo,
+            onDismiss = { updateViewModel.dismissUpdate() },
+            onDownload = { url ->
+                updateViewModel.dismissUpdate()
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    data = Uri.parse(url)
+                }
+                context.startActivity(intent)
+            }
+        )
+    }
+
+    if (showSettings) {
+        SettingsScreen(
+            updateViewModel = updateViewModel,
+            onNavigateBack = { showSettings = false },
+            onOpenGitHub = {
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    data = Uri.parse("https://github.com/lin04-24/SQLiteViewer-APP")
+                }
+                context.startActivity(intent)
+            }
+        )
+        return
+    }
+
     DbViewerTheme {
         Scaffold(
             containerColor = DbColors.Background,
@@ -142,6 +225,7 @@ fun DbViewerApp(initialUri: Uri?) {
                     onOpen = { openLauncher.launch(DATABASE_MIME_TYPES) },
                     onBack = { if (state.selectedTable != null) vm.clearTableSelection() else vm.closeDatabase() },
                     onClose = { section = ViewerSection.Browse; vm.closeDatabase() },
+                    onOpenSettings = { showSettings = true }
                 )
             },
             bottomBar = { if (state.session != null) ViewerBottomBar(section) { section = it } },
@@ -182,7 +266,7 @@ fun DbViewerApp(initialUri: Uri?) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ViewerTopBar(state: DbViewModel.UiState, onOpen: () -> Unit, onBack: () -> Unit, onClose: () -> Unit) {
+private fun ViewerTopBar(state: DbViewModel.UiState, onOpen: () -> Unit, onBack: () -> Unit, onClose: () -> Unit, onOpenSettings: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
     var about by remember { mutableStateOf(false) }
     TopAppBar(
@@ -227,6 +311,7 @@ private fun ViewerTopBar(state: DbViewModel.UiState, onOpen: () -> Unit, onBack:
                     if (state.session != null) {
                         DropdownMenuItem(text = { Text("关闭数据库", fontSize = 13.sp) }, onClick = { menu = false; onClose() })
                     }
+                    DropdownMenuItem(text = { Text("设置", fontSize = 13.sp) }, onClick = { menu = false; onOpenSettings() })
                     DropdownMenuItem(text = { Text("关于", fontSize = 13.sp) }, onClick = { menu = false; about = true })
                 }
             }
