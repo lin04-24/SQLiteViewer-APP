@@ -98,12 +98,21 @@ fun SettingsScreen(
             }
 
             // Update Status Message
-            when (val state = updateState) {
-                is UpdateState.Available -> {
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 96.dp)
+                    .padding(horizontal = 16.dp),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                when (val state = updateState) {
+                    is UpdateState.Checking -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(10.dp))
+                        Text("检查中...", style = MaterialTheme.typography.bodyMedium)
+                    }
+                    is UpdateState.Available -> Card(
+                        modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(
                             containerColor = MaterialTheme.colorScheme.primaryContainer
                         )
@@ -120,24 +129,18 @@ fun SettingsScreen(
                             )
                         }
                     }
-                }
-                is UpdateState.NoUpdate -> {
-                    Text(
+                    is UpdateState.NoUpdate -> Text(
                         text = "已是最新版本",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(16.dp)
                     )
-                }
-                is UpdateState.Error -> {
-                    Text(
+                    is UpdateState.Error -> Text(
                         text = "检查失败: ${state.message}",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.padding(16.dp)
                     )
+                    else -> Unit
                 }
-                else -> {}
             }
 
             Spacer(Modifier.height(16.dp))

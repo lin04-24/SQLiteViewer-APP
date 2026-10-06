@@ -2,7 +2,7 @@
 
 一个完全离线运行的 Android SQLite 数据库查看器，面向手机和平板设备。应用通过系统文件选择器、系统“打开方式”或分享接收 `.db` 文件，以只读方式打开并浏览数据库结构、表数据和 SQL 查询结果。
 
-当前版本：`v1.1`
+当前版本：`v1.2`
 最低系统：Android 8.0（API 26）  
 技术栈：Kotlin、Jetpack Compose、Material 3、Navigation Compose
 
@@ -23,7 +23,7 @@
 - 查询历史可复用、复制或清空；查询和数据库 IO 在 `Dispatchers.IO` 执行。
 - 深色主题、响应式布局、动态字体和无障碍语义；平板与横屏使用对象列表和内容区域的双栏布局。
 - 设置页面支持自动更新检查开关、手动检查、版本信息和 GitHub 项目入口；更新检查默认关闭。
-- 应用内更新检查仅访问 GitHub Releases API，通过 HTTPS 获取版本号、更新日志和 APK 下载地址，不上传用户数据。
+- 应用内更新检查通过 HTTPS 获取 GitHub Releases 的版本号、更新日志和 APK 下载地址；API 限流时自动使用公开 Atom 发布源，不上传用户数据。
 
 ## 只读保护
 
@@ -62,7 +62,7 @@ app/src/main/java/com/example/dbviewer/
 app/build/outputs/apk/debug/SQLiteViewer.apk
 ```
 
-生成 v1.1 Release APK：
+生成 v1.2 Release APK：
 
 ```powershell
 ./gradlew.bat :app:assembleRelease
@@ -76,74 +76,26 @@ app/build/outputs/apk/release/SQLiteViewer.apk
 
 该 APK 使用项目的 release 构建配置，启用 R8 资源压缩，并包含 ProfileInstaller 与 Baseline Profile 集成。
 
-### 签名配置
+发布签名配置保存在本地 `keystore.properties` 中，签名文件、本地 SDK 配置和构建产物均已加入 `.gitignore`，不会提交到仓库。可参考 `keystore.properties.example` 配置本地 Release 构建。
 
-**正式发布**需要配置签名密钥：
+## v1.2 发布
 
-1. 在项目根目录创建 `keystore.properties`（参考 `keystore.properties.example`）
-2. 配置密钥库路径、密码、别名等信息
-3. 执行 `./gradlew assembleRelease` 将使用正式签名
+正式 APK 发布在 GitHub Releases：
+<https://github.com/lin04-24/SQLiteViewer-APP/releases/tag/v1.2>
 
-详细配置步骤见 [SIGNING.md](SIGNING.md)。
+v1.2 包含以下更新：
 
-如果未配置 `keystore.properties`，Release 构建会自动使用 debug 签名（仅用于测试分发）。安装前请确认已卸载旧的同包名版本，或使用相同签名的构建进行覆盖安装。
-
-## 测试覆盖
-
-当前单元测试覆盖：
-
-- 只读 SQL 防护关键字和 `query_only` 配置。
-- 数量、耗时、字节数、对象类型和视觉宽度格式化。
-- CSV/JSON 转义、NULL、数字识别和导出文件名处理。
-
-建议在真实设备或模拟器上继续验证 SAF 权限、分享打开、旋转恢复、损坏数据库、权限错误、加密数据库、磁盘空间不足和大规模数据库滚动性能。
-
-## 性能优化
-
-首屏和滚动过程只保留当前数据页及其 UI 虚拟化内容，BLOB 延迟为长度摘要，查询在后台线程串行执行。列宽计算在后台协程中完成，并限制为最多 50 行样本；网格行使用稳定 content type，单元格绘制使用缓存。针对有 INTEGER PRIMARY KEY 或 `rowid` 的表启用 Keyset Pagination；无主键表、复合主键表和尾页跳转保留 LIMIT/OFFSET 回退。v1.1 增加最多 3 页的 LRU 页面缓存和滚动预加载，减少连续翻页等待。
-
-v1.0 包含 Baseline Profile 和 Macrobenchmark 配置，覆盖应用启动、历史浏览、打开数据库、表切换、数据滚动、查询和导出等热路径。性能测试模块位于 [`benchmark/`](benchmark/)，详细命令、设备要求和结果说明见 [`benchmark/README.md`](benchmark/README.md)。Baseline Profile 需要连接 Android 设备或模拟器生成，Release 构建会通过 `profileinstaller` 安装已生成的 Profile。实际提升取决于设备、SQLite 数据规模和缓存状态，建议用真实数据库进行基准测试。
-
-基准测试与 Profile 生成：
-
-```powershell
-# 连接 API 28+ 设备后生成 Profile
-./gradlew.bat :benchmark:generateBaselineProfile
-
-# 运行启动或表切换 Macrobenchmark
-./gradlew.bat :benchmark:connectedCheck -Pandroid.testInstrumentationRunnerArguments.class=com.example.sqliteviewer.benchmark.StartupBenchmark
-./gradlew.bat :benchmark:connectedCheck -Pandroid.testInstrumentationRunnerArguments.class=com.example.sqliteviewer.benchmark.TableSwitchBenchmark
-```
-
-## v1.1 发布
-
-正式 APK 和校验文件发布在 GitHub Releases：
-<https://github.com/lin04-24/SQLiteViewer-APP/releases/tag/v1.1>
-
-v1.1 包含以下发布内容：
-
-- DataGrid 列宽计算异步化，并将样本限制为最多 50 行。
-- LazyColumn 行 content type、单元格绘制缓存和滚动位置监听。
-- 页面 LRU 缓存与下一页后台预加载，分页栏显示预加载状态。
-- Release APK 版本号为 `versionCode 5`、`versionName 1.1`。
-- APK 发布资产包含 `SQLiteViewer.apk` 和 `SHA256SUMS` 校验文件。
-
-## v1.0 发布
-
-正式 APK 和校验文件发布在 GitHub Releases：
-<https://github.com/lin04-24/SQLiteViewer-APP/releases/tag/v1.0>
-
-v1.0 包含以下发布内容：
-
-- 应用内 GitHub Releases 更新检查，支持首次启动引导和设置页控制。
-- 正式 Release 构建使用 RSA 2048 发布签名，并启用 R8 资源压缩。
-- APK 发布资产包含 `SQLiteViewer.apk` 和 `SHA256SUMS` 校验文件。
+- 修复设置页手动检查更新时的页面闪烁，检查中显示稳定的进度状态。
+- 防止重复发起更新检查，启动自动检查只执行一次。
+- 为 GitHub 请求补充标准请求头；遇到 API `403` 限流时自动回退到公开 Atom 发布源。
+- Release APK 版本号为 `versionCode 6`、`versionName 1.2`。
+- Release 资产包含 `SQLiteViewer.apk` 和 `SHA256SUMS` 校验文件。
 
 ## 隐私
 
 应用默认不发起网络请求，不上传数据库或崩溃日志。数据库副本仅在应用缓存目录中用于本地读取，关闭数据库会话后清理。
 
-**更新检查功能（可选）**：v1.0 提供应用内更新检查功能，默认禁用。用户可在设置中启用自动更新检查，启用后应用仅在启动时向 GitHub Releases API (api.github.com) 发起单次 HTTPS 请求以检查版本更新，不上传任何用户数据、数据库内容或使用信息。该功能完全可选，用户可随时在设置中禁用。
+**更新检查功能（可选）**：v1.2 提供应用内更新检查功能，默认禁用。用户可在设置中启用自动更新检查，启用后应用在启动时向 GitHub Releases 发起单次 HTTPS 请求以检查版本更新，不上传任何用户数据、数据库内容或使用信息。该功能完全可选，用户可随时在设置中禁用。
 
 ## 许可证
 

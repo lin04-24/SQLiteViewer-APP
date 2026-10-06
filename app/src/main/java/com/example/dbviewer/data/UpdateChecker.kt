@@ -4,6 +4,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import android.util.Xml
+import org.xmlpull.v1.XmlPullParser
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -31,9 +34,16 @@ data class UpdateInfo(
 class UpdateChecker {
     private val json = Json { ignoreUnknownKeys = true }
 
+    private companion object {
+        const val RELEASES_API_URL = "https://api.github.com/repos/lin04-24/SQLiteViewer-APP/releases/latest"
+        const val RELEASES_ATOM_URL = "https://github.com/lin04-24/SQLiteViewer-APP/releases.atom"
+        const val LATEST_APK_URL = "https://github.com/lin04-24/SQLiteViewer-APP/releases/latest/download/SQLiteViewer.apk"
+        const val USER_AGENT = "SQLiteViewer-Android"
+    }
+
     suspend fun checkForUpdate(currentVersion: String): Result<UpdateInfo?> = withContext(Dispatchers.IO) {
         runCatching {
-            val url = URL("https://api.github.com/repos/lin04-24/SQLiteViewer-APP/releases/latest")
+            val url = URL(RELEASES_API_URL)
             val connection = url.openConnection() as HttpURLConnection
 
             try {
@@ -42,9 +52,14 @@ class UpdateChecker {
                     connectTimeout = 10000
                     readTimeout = 10000
                     setRequestProperty("Accept", "application/vnd.github.v3+json")
+                    setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+                    setRequestProperty("User-Agent", USER_AGENT)
                 }
 
-                if (connection.responseCode != 200) {
+                if (connection.responseCode == HttpURLConnection.HTTP_FORBIDDEN) {
+                    return@runCatching checkFromAtom(currentVersion)
+                }
+                if (connection.responseCode != HttpURLConnection.HTTP_OK) {
                     throw Exception("HTTP ${connection.responseCode}")
                 }
 
@@ -72,6 +87,83 @@ class UpdateChecker {
             } finally {
                 connection.disconnect()
             }
+        }
+    }
+
+    /** The API is subject to a small unauthenticated quota; the public Atom feed is not. */
+    private fun checkFromAtom(currentVersion: String): UpdateInfo? {
+        val connection = URL(RELEASES_ATOM_URL).openConnection() as HttpURLConnection
+        try {
+            connection.apply {
+                requestMethod = "GET"
+                connectTimeout = 10000
+                readTimeout = 10000
+                setRequestProperty("Accept", "application/atom+xml")
+                setRequestProperty("User-Agent", USER_AGENT)
+            }
+            if (connection.responseCode != HttpURLConnection.HTTP_OK) {
+                throw IOException("GitHub 更新服务暂时不可用")
+            }
+
+            val parser = Xml.newPullParser().apply {
+                setInput(connection.inputStream.bufferedReader())
+            }
+            var event = parser.eventType
+            var inEntry = false
+            var inContent = false
+            var tag = ""
+            var version: String? = null
+            var title = ""
+            var changelog = ""
+            while (event != XmlPullParser.END_DOCUMENT) {
+                when (event) {
+                    XmlPullParser.START_TAG -> {
+                        tag = parser.name
+                        if (tag == "entry") {
+                            inEntry = true
+                            version = null
+                            title = ""
+                            changelog = ""
+                            inContent = false
+                        } else if (inEntry && tag == "link" && parser.getAttributeValue(null, "rel") == "alternate") {
+                            version = parser.getAttributeValue(null, "href")?.substringAfterLast("/tag/")
+                        } else if (inEntry && tag == "content") {
+                            inContent = true
+                        }
+                    }
+                    XmlPullParser.TEXT -> if (inEntry) {
+                        when (tag) {
+                            "title" -> title += parser.text
+                            "content" -> changelog += parser.text
+                            else -> if (inContent) changelog += parser.text
+                        }
+                    }
+                    XmlPullParser.END_TAG -> {
+                        if (parser.name == "content") {
+                            inContent = false
+                        } else if (parser.name == "entry") {
+                            val latestVersion = version?.removePrefix("v")
+                            if (!latestVersion.isNullOrBlank()) {
+                                return if (isNewerVersion(latestVersion, currentVersion)) {
+                                    UpdateInfo(
+                                        version = version!!,
+                                        versionName = title.ifBlank { version!! },
+                                        changelog = changelog.replace(Regex("<[^>]+>"), "").trim(),
+                                        downloadUrl = LATEST_APK_URL,
+                                    )
+                                } else {
+                                    null
+                                }
+                            }
+                            inEntry = false
+                        }
+                    }
+                }
+                event = parser.next()
+            }
+            return null
+        } finally {
+            connection.disconnect()
         }
     }
 

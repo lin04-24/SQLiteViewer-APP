@@ -8,6 +8,7 @@ import com.example.dbviewer.data.UpdateInfo
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
 
 sealed class UpdateState {
     object Idle : UpdateState()
@@ -32,6 +33,8 @@ class UpdateViewModel(
     private val _autoCheckEnabled = MutableStateFlow(false)
     val autoCheckEnabled = _autoCheckEnabled.asStateFlow()
 
+    private var checkJob: Job? = null
+
     init {
         viewModelScope.launch {
             preferencesStore.autoCheckUpdates.collect { enabled ->
@@ -41,7 +44,8 @@ class UpdateViewModel(
     }
 
     fun checkForUpdates() {
-        viewModelScope.launch {
+        if (checkJob?.isActive == true) return
+        checkJob = viewModelScope.launch {
             _updateState.value = UpdateState.Checking
 
             updateChecker.checkForUpdate(currentVersion).fold(

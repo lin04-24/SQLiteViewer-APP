@@ -13,7 +13,15 @@ local.properties
 # Keystore files - NEVER commit these!
 *.jks
 *.keystore
+*.p12
+*.pfx
+*.pem
+*.key
 keystore.properties
+
+# Release artifacts are uploaded to GitHub Releases, not committed to the repository
+*.apk
+*.aab
 
 # Generated and temporary files
 captures/

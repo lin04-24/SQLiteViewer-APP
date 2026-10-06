@@ -84,6 +84,7 @@ import com.example.dbviewer.ui.theme.DbViewerTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.first
 
 private val DATABASE_MIME_TYPES = arrayOf("application/octet-stream", "application/x-sqlite3", "application/vnd.sqlite3", "*/*")
 
@@ -122,19 +123,10 @@ fun DbViewerApp(initialUri: Uri?) {
 
     // Check for updates on startup if enabled
     LaunchedEffect(Unit) {
-        preferencesStore.autoCheckUpdates.collect { enabled ->
-            if (enabled) {
-                updateViewModel.checkForUpdates()
-            } else {
-                // Show first-time dialog on first launch
-                launch {
-                    preferencesStore.lastUpdateCheck.collect { lastCheck ->
-                        if (lastCheck == 0L) {
-                            updateViewModel.showFirstTimeDialog()
-                        }
-                    }
-                }
-            }
+        if (preferencesStore.autoCheckUpdates.first()) {
+            updateViewModel.checkForUpdates()
+        } else if (preferencesStore.lastUpdateCheck.first() == 0L) {
+            updateViewModel.showFirstTimeDialog()
         }
     }
 
