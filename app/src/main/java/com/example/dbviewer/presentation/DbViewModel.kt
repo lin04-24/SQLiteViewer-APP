@@ -14,6 +14,13 @@ import com.example.dbviewer.data.IndexInfo
 import com.example.dbviewer.data.PageDirection
 import com.example.dbviewer.data.PagedRows
 import com.example.dbviewer.data.RowCount
+import com.example.dbviewer.data.SortDirection
+import com.example.dbviewer.data.ColumnFilter
+import com.example.dbviewer.data.FilterType
+import com.example.dbviewer.data.PreferencesStore
+import com.example.dbviewer.data.TablePreferences
+import com.example.dbviewer.data.persistedName
+import com.example.dbviewer.data.toSortDirection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -33,7 +40,10 @@ data class PageCache(
     val timestamp: Long = System.currentTimeMillis()
 )
 
-class DbViewModel(private val repo: DbRepository) : ViewModel() {
+class DbViewModel(
+    private val repo: DbRepository,
+    private val preferencesStore: PreferencesStore,
+) : ViewModel() {
 
     data class UiState(
         val title: String = "SQLite Viewer",
@@ -69,6 +79,17 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
         val queryRan: Boolean = false,
         val history: List<HistoryEntry> = emptyList(),
         val preloadingNextPage: Boolean = false,
+        // 新增：表格交互状态
+        val sortColumn: String? = null,
+        val sortDirection: SortDirection = SortDirection.NONE,
+        val pinnedColumns: Set<String> = emptySet(),
+        val columnWidths: Map<String, Float> = emptyMap(),
+        val columnFilters: Map<String, ColumnFilter> = emptyMap(),
+        // 查询结果的交互状态（独立）
+        val querySortColumn: String? = null,
+        val querySortDirection: SortDirection = SortDirection.NONE,
+        val queryPinnedColumns: Set<String> = emptySet(),
+        val queryColumnWidths: Map<String, Float> = emptyMap(),
     ) {
         val pageCount: Int get() = if (totalRows <= 0) 1 else (((totalRows - 1) / pageSize) + 1).toInt().coerceAtLeast(1)
         val firstRowNumber: Int get() = if (rows.isEmpty()) 0 else pageIndex * pageSize + 1
@@ -83,6 +104,8 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
         val viewCount: Int get() = objects.count { it.kind.equals("view", true) }
         val indexCount: Int get() = objects.count { it.kind.equals("index", true) }
         val triggerCount: Int get() = objects.count { it.kind.equals("trigger", true) }
+        val hasActiveFilters: Boolean get() = columnFilters.isNotEmpty()
+        val hasActiveSort: Boolean get() = sortColumn != null && sortDirection != SortDirection.NONE
     }
 
     private val _state = MutableStateFlow(UiState())
@@ -93,6 +116,7 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
     private var gridJob: Job? = null
     private var queryJob: Job? = null
     private var preloadJob: Job? = null
+    private var currentDbPath: String? = null
 
     // LRU 缓存：最多缓存 3 页（前一页、当前页、后一页）
     private val pageCache = LinkedHashMap<Int, PageCache>(3, 0.75f, true)
@@ -104,6 +128,7 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
         preloadJob?.cancel()
         current?.let { runCatching { it.close() } }
         current = null
+        currentDbPath = uri.toString()
         pageCache.clear()
         _state.value = UiState(title = uri.lastPathSegment ?: "Database", loading = true)
         openJob = viewModelScope.launch(Dispatchers.IO) {
@@ -125,6 +150,7 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
         preloadJob?.cancel()
         current?.let { runCatching { it.close() } }
         current = null
+        currentDbPath = null
         pageCache.clear()
         _state.value = UiState()
     }
@@ -156,16 +182,30 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
             loading = true,
             preloadingNextPage = false,
             error = null,
+            // 重置排序和筛选状态
+            sortColumn = null,
+            sortDirection = SortDirection.NONE,
+            pinnedColumns = emptySet(),
+            columnWidths = emptyMap(),
+            columnFilters = emptyMap(),
         )
         gridJob = viewModelScope.launch(Dispatchers.IO) {
             runCatching {
                 val count: RowCount = session.estimatedRowCount(table)
+                val preferences = currentDbPath?.let { preferencesStore.loadTablePreferences(it, table) } ?: TablePreferences()
                 TableSnapshot(
                     columns = session.columns(table),
                     indexes = session.indexes(table),
                     ddl = session.ddl(table),
                     count = count,
-                    page = session.pageAt(table, 0, pageSize),
+                    preferences = preferences,
+                    page = session.pageAt(
+                        table = table,
+                        offset = 0,
+                        limit = pageSize,
+                        sortColumn = preferences.sortColumn,
+                        sortDirection = preferences.sortDirection,
+                    ),
                 )
             }.onSuccess { snapshot ->
                 val firstId = snapshot.page.rows.firstOrNull()?.id
@@ -185,6 +225,10 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
                     ddl = snapshot.ddl,
                     totalRows = snapshot.count.value,
                     totalExact = snapshot.count.exact,
+                    sortColumn = snapshot.preferences.sortColumn,
+                    sortDirection = snapshot.preferences.sortDirection.toSortDirection(),
+                    pinnedColumns = snapshot.preferences.pinnedColumns.take(MAX_PINNED_COLUMNS).toSet(),
+                    columnWidths = snapshot.preferences.columnWidths,
                     rows = snapshot.page.rows,
                     hasNextPage = snapshot.page.hasMore,
                     hasPreviousPage = false,
@@ -228,6 +272,7 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
         val table = _state.value.selectedTable ?: return
         val pageSize = _state.value.pageSize
         val target = index.coerceAtLeast(0)
+        val state = _state.value
 
         // 检查缓存
         pageCache[target]?.let { cached ->
@@ -253,38 +298,45 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
         gridJob?.cancel()
         _state.value = _state.value.copy(loading = true, pageIndex = target, selection = emptySet(), error = null)
         gridJob = viewModelScope.launch(Dispatchers.IO) {
-            runCatching { session.pageAt(table, target * pageSize, pageSize) }
-                .onSuccess { page ->
-                    val firstId = page.rows.firstOrNull()?.id
-                    val lastId = page.rows.lastOrNull()?.id
+            runCatching {
+                session.pageAt(
+                    table = table,
+                    offset = target * pageSize,
+                    limit = pageSize,
+                    sortColumn = state.sortColumn,
+                    sortDirection = state.sortDirection.name,
+                    filters = state.columnFilters.values.toList()
+                )
+            }.onSuccess { page ->
+                val firstId = page.rows.firstOrNull()?.id
+                val lastId = page.rows.lastOrNull()?.id
 
-                    // 缓存当前页
-                    addToCache(target, PageCache(
-                        pageIndex = target,
-                        rows = page.rows,
-                        hasNextPage = page.hasMore,
-                        hasPreviousPage = target > 0,
-                        firstId = firstId,
-                        lastId = lastId,
-                        usedKeyset = page.usedKeyset,
-                    ))
+                // 缓存当前页
+                addToCache(target, PageCache(
+                    pageIndex = target,
+                    rows = page.rows,
+                    hasNextPage = page.hasMore,
+                    hasPreviousPage = target > 0,
+                    firstId = firstId,
+                    lastId = lastId,
+                    usedKeyset = page.usedKeyset,
+                ))
 
-                    _state.value = _state.value.copy(
-                        rows = page.rows,
-                        hasNextPage = page.hasMore,
-                        hasPreviousPage = target > 0,
-                        firstIdOnPage = firstId,
-                        lastIdOnPage = lastId,
-                        usingKeysetPagination = page.usedKeyset,
-                        loading = false
-                    )
+                _state.value = _state.value.copy(
+                    rows = page.rows,
+                    hasNextPage = page.hasMore,
+                    hasPreviousPage = target > 0,
+                    firstIdOnPage = firstId,
+                    lastIdOnPage = lastId,
+                    usingKeysetPagination = page.usedKeyset,
+                    loading = false
+                )
 
-                    // 预加载下一页
-                    if (page.hasMore) {
-                        preloadPage(target + 1)
-                    }
+                // 预加载下一页
+                if (page.hasMore) {
+                    preloadPage(target + 1)
                 }
-                .onFailure { _state.value = _state.value.copy(loading = false, error = it.message ?: "无法读取数据") }
+            }.onFailure { _state.value = _state.value.copy(loading = false, error = it.message ?: "无法读取数据") }
         }
     }
 
@@ -299,7 +351,14 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
         gridJob = viewModelScope.launch(Dispatchers.IO) {
             runCatching {
                 val count = session.estimatedRowCount(table)
-                val page: PagedRows = session.pageAt(table, state.pageIndex * state.pageSize, state.pageSize)
+                val page: PagedRows = session.pageAt(
+                    table = table,
+                    offset = state.pageIndex * state.pageSize,
+                    limit = state.pageSize,
+                    sortColumn = state.sortColumn,
+                    sortDirection = state.sortDirection.name,
+                    filters = state.columnFilters.values.toList()
+                )
                 count to page
             }.onSuccess { (count, page) ->
                 val firstId = page.rows.firstOrNull()?.id
@@ -351,8 +410,8 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
             return
         }
 
-        // Use Keyset Pagination if available
-        if (state.usingKeysetPagination && state.lastIdOnPage != null) {
+        // Use Keyset Pagination if available and no sorting/filtering
+        if (state.usingKeysetPagination && state.lastIdOnPage != null && state.sortColumn == null && state.columnFilters.isEmpty()) {
             gridJob?.cancel()
             _state.value = state.copy(loading = true, selection = emptySet(), error = null, pageIndex = state.pageIndex + 1)
             gridJob = viewModelScope.launch(Dispatchers.IO) {
@@ -392,8 +451,8 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
         val table = _state.value.selectedTable ?: return
         val state = _state.value
 
-        // Use Keyset Pagination if available
-        if (state.usingKeysetPagination && state.firstIdOnPage != null && state.pageIndex > 0) {
+        // Use Keyset Pagination if available and no sorting/filtering
+        if (state.usingKeysetPagination && state.firstIdOnPage != null && state.pageIndex > 0 && state.sortColumn == null && state.columnFilters.isEmpty()) {
             gridJob?.cancel()
             _state.value = state.copy(loading = true, selection = emptySet(), error = null, pageIndex = state.pageIndex - 1)
             gridJob = viewModelScope.launch(Dispatchers.IO) {
@@ -532,32 +591,41 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
         val pageSize = _state.value.pageSize
         val currentState = _state.value
         val keysetCursor = currentState.lastIdOnPage
-            ?.takeIf { currentState.usingKeysetPagination && pageIndex == currentState.pageIndex + 1 }
+            ?.takeIf { currentState.usingKeysetPagination && pageIndex == currentState.pageIndex + 1 && currentState.sortColumn == null && currentState.columnFilters.isEmpty() }
 
         preloadJob?.cancel()
         _state.value = _state.value.copy(preloadingNextPage = true)
         preloadJob = viewModelScope.launch(Dispatchers.IO) {
-            runCatching { session.pageAt(table, pageIndex * pageSize, pageSize, keysetCursor, PageDirection.NEXT) }
-                .onSuccess { page ->
-                    val firstId = page.rows.firstOrNull()?.id
-                    val lastId = page.rows.lastOrNull()?.id
+            runCatching {
+                session.pageAt(
+                    table = table,
+                    offset = pageIndex * pageSize,
+                    limit = pageSize,
+                    lastSeenId = keysetCursor,
+                    direction = PageDirection.NEXT,
+                    sortColumn = currentState.sortColumn,
+                    sortDirection = currentState.sortDirection.name,
+                    filters = currentState.columnFilters.values.toList()
+                )
+            }.onSuccess { page ->
+                val firstId = page.rows.firstOrNull()?.id
+                val lastId = page.rows.lastOrNull()?.id
 
-                    // 缓存预加载的页面
-                    addToCache(pageIndex, PageCache(
-                        pageIndex = pageIndex,
-                        rows = page.rows,
-                        hasNextPage = page.hasMore,
-                        hasPreviousPage = pageIndex > 0,
-                        firstId = firstId,
-                        lastId = lastId,
-                        usedKeyset = page.usedKeyset,
-                    ))
+                // 缓存预加载的页面
+                addToCache(pageIndex, PageCache(
+                    pageIndex = pageIndex,
+                    rows = page.rows,
+                    hasNextPage = page.hasMore,
+                    hasPreviousPage = pageIndex > 0,
+                    firstId = firstId,
+                    lastId = lastId,
+                    usedKeyset = page.usedKeyset,
+                ))
 
-                    _state.value = _state.value.copy(preloadingNextPage = false)
-                }
-                .onFailure {
-                    _state.value = _state.value.copy(preloadingNextPage = false)
-                }
+                _state.value = _state.value.copy(preloadingNextPage = false)
+            }.onFailure {
+                _state.value = _state.value.copy(preloadingNextPage = false)
+            }
         }
     }
 
@@ -568,16 +636,225 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
         }
     }
 
-    private data class TableSnapshot(val columns: List<ColumnInfo>, val indexes: List<IndexInfo>, val ddl: List<DdlItem>, val count: RowCount, val page: PagedRows)
+    // ========== 新增：列排序功能 ==========
+
+    /**
+     * 切换列排序
+     */
+    fun toggleSort(columnName: String) {
+        val state = _state.value
+        val newDirection = if (state.sortColumn == columnName) {
+            state.sortDirection.next()
+        } else {
+            SortDirection.ASC
+        }
+
+        if (newDirection == SortDirection.NONE) {
+            // 清除排序
+            _state.value = state.copy(
+                sortColumn = null,
+                sortDirection = SortDirection.NONE,
+            )
+        } else {
+            _state.value = state.copy(
+                sortColumn = columnName,
+                sortDirection = newDirection,
+            )
+        }
+
+        persistTablePreferences()
+
+        // 清空缓存并重新加载第一页
+        pageCache.clear()
+        loadPage(0)
+    }
+
+    // ========== 新增：列固定功能 ==========
+
+    /**
+     * 切换列固定状态（最多固定 3 列）
+     */
+    fun togglePinColumn(columnName: String) {
+        val state = _state.value
+        val newPinned = if (columnName in state.pinnedColumns) {
+            state.pinnedColumns - columnName
+        } else {
+            if (state.pinnedColumns.size >= MAX_PINNED_COLUMNS) {
+                // 已达到最大固定列数
+                return
+            }
+            state.pinnedColumns + columnName
+        }
+        _state.value = state.copy(pinnedColumns = newPinned)
+        persistTablePreferences()
+    }
+
+    /**
+     * 清除所有固定列
+     */
+    fun clearPinnedColumns() {
+        _state.value = _state.value.copy(pinnedColumns = emptySet())
+        persistTablePreferences()
+    }
+
+    // ========== 新增：列宽调整功能 ==========
+
+    /**
+     * 设置列宽
+     */
+    fun setColumnWidth(columnName: String, widthDp: Float) {
+        val state = _state.value
+        _state.value = state.copy(
+            columnWidths = state.columnWidths + (columnName to widthDp.coerceIn(MIN_COLUMN_WIDTH_DP, MAX_COLUMN_WIDTH_DP))
+        )
+        persistTablePreferences()
+    }
+
+    /**
+     * 重置所有列宽到默认值
+     */
+    fun resetColumnWidths() {
+        _state.value = _state.value.copy(columnWidths = emptyMap())
+        persistTablePreferences()
+    }
+
+    // ========== 新增：列筛选功能 ==========
+
+    /**
+     * 设置列筛选
+     */
+    fun setColumnFilter(columnName: String, filterType: FilterType, value: String) {
+        val state = _state.value
+        if (value.isBlank()) {
+            // 清除筛选
+            _state.value = state.copy(
+                columnFilters = state.columnFilters - columnName
+            )
+        } else {
+            _state.value = state.copy(
+                columnFilters = state.columnFilters + (columnName to ColumnFilter(columnName, filterType, value))
+            )
+        }
+
+        persistTablePreferences()
+
+        // 清空缓存并重新加载第一页
+        pageCache.clear()
+        loadPage(0)
+    }
+
+    /**
+     * 清除指定列的筛选
+     */
+    fun clearColumnFilter(columnName: String) {
+        val state = _state.value
+        _state.value = state.copy(
+            columnFilters = state.columnFilters - columnName
+        )
+
+        persistTablePreferences()
+
+        // 清空缓存并重新加载第一页
+        pageCache.clear()
+        loadPage(0)
+    }
+
+    /**
+     * 清除所有筛选
+     */
+    fun clearAllFilters() {
+        _state.value = _state.value.copy(columnFilters = emptyMap())
+
+        persistTablePreferences()
+
+        // 清空缓存并重新加载第一页
+        pageCache.clear()
+        loadPage(0)
+    }
+
+    // ========== 新增：查询结果的交互功能 ==========
+
+    /**
+     * 切换查询结果列排序
+     */
+    fun toggleQuerySort(columnName: String) {
+        val state = _state.value
+        val newDirection = if (state.querySortColumn == columnName) {
+            state.querySortDirection.next()
+        } else {
+            SortDirection.ASC
+        }
+
+        _state.value = state.copy(
+            querySortColumn = if (newDirection == SortDirection.NONE) null else columnName,
+            querySortDirection = newDirection,
+        )
+    }
+
+    /**
+     * 切换查询结果列固定
+     */
+    fun toggleQueryPinColumn(columnName: String) {
+        val state = _state.value
+        val newPinned = if (columnName in state.queryPinnedColumns) {
+            state.queryPinnedColumns - columnName
+        } else {
+            if (state.queryPinnedColumns.size >= MAX_PINNED_COLUMNS) return
+            state.queryPinnedColumns + columnName
+        }
+        _state.value = state.copy(queryPinnedColumns = newPinned)
+    }
+
+    /**
+     * 设置查询结果列宽
+     */
+    fun setQueryColumnWidth(columnName: String, widthDp: Float) {
+        val state = _state.value
+        _state.value = state.copy(
+            queryColumnWidths = state.queryColumnWidths + (columnName to widthDp)
+        )
+    }
+
+    private data class TableSnapshot(
+        val columns: List<ColumnInfo>,
+        val indexes: List<IndexInfo>,
+        val ddl: List<DdlItem>,
+        val count: RowCount,
+        val preferences: TablePreferences,
+        val page: PagedRows,
+    )
+
+    private fun persistTablePreferences() {
+        val table = _state.value.selectedTable ?: return
+        val dbPath = currentDbPath ?: return
+        val state = _state.value
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                preferencesStore.saveTablePreferences(
+                    dbPath = dbPath,
+                    tableName = table,
+                    preferences = TablePreferences(
+                        columnWidths = state.columnWidths,
+                        pinnedColumns = state.pinnedColumns,
+                        sortColumn = state.sortColumn,
+                        sortDirection = state.sortDirection.persistedName,
+                    ),
+                )
+            }
+        }
+    }
 
     companion object {
         const val DEFAULT_PAGE_SIZE = 100
         private const val MAX_HISTORY = 40
         private const val DEFAULT_SQL = "SELECT name, type FROM sqlite_master ORDER BY name"
+        private const val MAX_PINNED_COLUMNS = 3
+        private const val MIN_COLUMN_WIDTH_DP = 50f
+        private const val MAX_COLUMN_WIDTH_DP = 600f
         val PAGE_SIZES = listOf(50, 100, 200, 500)
-        fun factory(repo: DbRepository) = object : ViewModelProvider.Factory {
+        fun factory(repo: DbRepository, preferencesStore: PreferencesStore) = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
-            override fun <T : ViewModel> create(modelClass: Class<T>): T = DbViewModel(repo) as T
+            override fun <T : ViewModel> create(modelClass: Class<T>): T = DbViewModel(repo, preferencesStore) as T
         }
     }
 }

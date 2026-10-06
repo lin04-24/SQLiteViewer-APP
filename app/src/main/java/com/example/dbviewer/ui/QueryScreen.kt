@@ -43,6 +43,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.dbviewer.data.GridRow
+import com.example.dbviewer.data.SortDirection
 import com.example.dbviewer.presentation.DbViewModel
 import com.example.dbviewer.ui.components.DataGrid
 import com.example.dbviewer.ui.components.EmptyHint
@@ -67,7 +68,30 @@ fun QueryScreen(
     LaunchedEffect(state.queryColumns, state.queryRows) {
         columns = gridColumnsFromNames(state.queryColumns, state.queryRows)
     }
-    val rows = remember(state.queryRows) { state.queryRows.mapIndexed { index, values -> GridRow(position = index, id = null, values = values) } }
+    val displayValues = remember(
+        state.queryRows,
+        state.queryColumns,
+        state.querySortColumn,
+        state.querySortDirection,
+    ) {
+        val sortIndex = state.querySortColumn?.let { state.queryColumns.indexOf(it) } ?: -1
+        if (sortIndex < 0 || state.querySortDirection == SortDirection.NONE) {
+            state.queryRows
+        } else {
+            state.queryRows.sortedWith { left, right ->
+                val leftValue = left.getOrNull(sortIndex)
+                val rightValue = right.getOrNull(sortIndex)
+                val comparison = when {
+                    leftValue == null && rightValue == null -> 0
+                    leftValue == null -> -1
+                    rightValue == null -> 1
+                    else -> leftValue.compareTo(rightValue, ignoreCase = true)
+                }
+                if (state.querySortDirection == SortDirection.ASC) comparison else -comparison
+            }
+        }
+    }
+    val rows = remember(displayValues) { displayValues.mapIndexed { index, values -> GridRow(position = index, id = null, values = values) } }
 
     Column(modifier.fillMaxSize()) {
         Column(Modifier.fillMaxWidth().background(DbColors.Surface).padding(12.dp)) {
@@ -156,6 +180,14 @@ fun QueryScreen(
                     onRowClick = { detail = it },
                     onRowLongClick = { clipboard.setText(AnnotatedString(buildJson(state.queryColumns, listOf(it.values)))) },
                     emptyText = "查询没有返回行",
+                    // 查询结果的交互功能
+                    sortColumn = state.querySortColumn,
+                    sortDirection = state.querySortDirection,
+                    pinnedColumns = state.queryPinnedColumns,
+                    columnWidths = state.queryColumnWidths,
+                    onSort = vm::toggleQuerySort,
+                    onTogglePin = vm::toggleQueryPinColumn,
+                    onResizeColumn = vm::setQueryColumnWidth,
                 )
             }
             state.queryRan && state.queryError == null -> Box(Modifier.weight(1f)) { EmptyHint("查询没有返回行") }

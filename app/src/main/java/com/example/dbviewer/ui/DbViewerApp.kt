@@ -101,10 +101,12 @@ fun DbViewerApp(initialUri: Uri?) {
     val scope = rememberCoroutineScope()
     val recentStore = remember(context) { RecentFilesStore(context) }
     var recent by remember { mutableStateOf(recentStore.list()) }
-    val vm: DbViewModel = viewModel(factory = DbViewModel.factory(DbRepository(context)))
+    val preferencesStore = remember(context) { PreferencesStore(context) }
+    val vm: DbViewModel = viewModel(
+        factory = DbViewModel.factory(DbRepository(context), preferencesStore)
+    )
     val state by vm.state.collectAsState()
 
-    val preferencesStore = remember(context) { PreferencesStore(context) }
     val updateViewModel = remember(context) {
         UpdateViewModel(
             updateChecker = UpdateChecker(),

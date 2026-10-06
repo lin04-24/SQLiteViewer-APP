@@ -63,25 +63,44 @@ class DbSession private constructor(private val db: SQLiteDatabase, val file: Fi
      * Reads one page of rows using Keyset Pagination (WHERE id > lastId) when possible for optimal performance,
      * or falls back to LIMIT/OFFSET for tables without suitable primary keys.
      * Keyset pagination avoids scanning millions of rows when navigating large tables.
+     *
+     * @param sortColumn 排序列名，非空时禁用 Keyset Pagination
+     * @param sortDirection 排序方向 ASC/DESC
+     * @param filters 列筛选条件
      */
-    fun pageAt(table: String, offset: Int, limit: Int, lastSeenId: Long? = null, direction: PageDirection = PageDirection.NEXT): PagedRows {
+    fun pageAt(
+        table: String,
+        offset: Int,
+        limit: Int,
+        lastSeenId: Long? = null,
+        direction: PageDirection = PageDirection.NEXT,
+        sortColumn: String? = null,
+        sortDirection: String? = null,
+        filters: List<ColumnFilter> = emptyList()
+    ): PagedRows {
         val plans = columnPlan(table)
         require(plans.isNotEmpty()) { "Table has no readable columns" }
         val projection = plans.joinToString(", ") { "${it.expression} AS ${quote(it.name)}" }
         val identityPlan = plans.firstOrNull { it.isIdentity }
 
-        // Use Keyset Pagination if we have an INTEGER PRIMARY KEY and are navigating sequentially
-        val keysetCursor = identityPlan?.let { plan -> lastSeenId?.let { plan to it } }
+        // 有排序或筛选时禁用 Keyset Pagination
+        val canUseKeyset = sortColumn == null && filters.isEmpty()
+        val keysetCursor = if (canUseKeyset) identityPlan?.let { plan -> lastSeenId?.let { plan to it } } else null
+
+        // 构建 WHERE 子句（筛选条件）
+        val whereClause = buildWhereClause(filters)
 
         val sql = if (keysetCursor != null) {
             val (keysetPlan, seenId) = keysetCursor
             val operator = if (direction == PageDirection.NEXT) ">" else "<"
             val order = if (direction == PageDirection.NEXT) "ASC" else "DESC"
-            "SELECT $projection FROM ${quote(table)} WHERE ${keysetPlan.expression} $operator $seenId ORDER BY ${keysetPlan.expression} $order LIMIT ${limit + 1}"
+            val where = if (whereClause.isEmpty()) "WHERE" else "$whereClause AND"
+            "SELECT $projection FROM ${quote(table)} $where ${keysetPlan.expression} $operator $seenId ORDER BY ${keysetPlan.expression} $order LIMIT ${limit + 1}"
         } else {
-            // Fallback to OFFSET pagination for tables without primary key or first page
+            // Fallback to OFFSET pagination
             val safeOffset = offset.coerceAtLeast(0)
-            "SELECT $projection FROM ${quote(table)}${orderClause(plans)} LIMIT ${limit + 1} OFFSET $safeOffset"
+            val order = buildOrderClause(plans, sortColumn, sortDirection)
+            "SELECT $projection FROM ${quote(table)}$whereClause$order LIMIT ${limit + 1} OFFSET $safeOffset"
         }
 
         val visible = plans.withIndex().filter { !it.value.internal }
@@ -100,10 +119,45 @@ class DbSession private constructor(private val db: SQLiteDatabase, val file: Fi
             }
             // Reverse rows if we queried backwards
             val finalRows = if (keysetCursor != null && direction == PageDirection.PREVIOUS) rows.reversed() else rows
-            // Keep the capability flag set for the initial OFFSET page as well. The ViewModel
-            // uses it to switch the next sequential navigation request to keyset pagination.
-            return PagedRows(finalRows, hasMore, identityPlan != null)
+            // 有排序或筛选时禁用 keyset 标志
+            return PagedRows(finalRows, hasMore, canUseKeyset && identityPlan != null)
         }
+    }
+
+    /**
+     * 构建 WHERE 子句用于列筛选
+     */
+    private fun buildWhereClause(filters: List<ColumnFilter>): String {
+        if (filters.isEmpty()) return ""
+        val conditions = filters.map { filter ->
+            val columnName = quote(filter.column)
+            when (filter.filterType) {
+                FilterType.CONTAINS -> "$columnName LIKE '%${escapeLike(filter.value)}%' ESCAPE '\\'"
+                FilterType.NOT_CONTAINS -> "($columnName NOT LIKE '%${escapeLike(filter.value)}%' ESCAPE '\\' OR $columnName IS NULL)"
+            }
+        }
+        return " WHERE ${conditions.joinToString(" AND ")}"
+    }
+
+    /**
+     * 转义 LIKE 语句中的特殊字符
+     */
+    private fun escapeLike(value: String): String {
+        return value
+            .replace("'", "''")
+            .replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+    }
+
+    /**
+     * 构建 ORDER BY 子句
+     */
+    private fun buildOrderClause(plans: List<ColumnPlan>, sortColumn: String?, sortDirection: String?): String {
+        if (sortColumn != null && sortDirection != null && sortDirection != "NONE") {
+            return " ORDER BY ${quote(sortColumn)} $sortDirection"
+        }
+        return orderClause(plans)
     }
 
     fun executeReadOnly(sql: String, limit: Int = 5000): QueryResult {
@@ -204,3 +258,17 @@ data class IndexInfo(val name: String, val unique: Boolean, val origin: String? 
 data class IndexField(val name: String?, val descending: Boolean, val collation: String?)
 data class TriggerInfo(val name: String, val table: String, val sql: String?)
 data class RowCount(val value: Long, val exact: Boolean)
+
+/**
+ * 列筛选条件
+ */
+data class ColumnFilter(
+    val column: String,
+    val filterType: FilterType,
+    val value: String,
+)
+
+enum class FilterType {
+    CONTAINS,      // 包含
+    NOT_CONTAINS,  // 不包含
+}

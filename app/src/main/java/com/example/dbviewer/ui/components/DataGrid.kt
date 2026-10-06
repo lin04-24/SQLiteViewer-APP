@@ -3,6 +3,7 @@ package com.example.dbviewer.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,32 +21,48 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.FilterAlt
 import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.TextMeasurer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.ExperimentalFoundationApi
 import com.example.dbviewer.data.ColumnInfo
+import com.example.dbviewer.data.FilterType
 import com.example.dbviewer.data.GridRow
+import com.example.dbviewer.data.SortDirection
 import com.example.dbviewer.ui.theme.DbColors
 import com.example.dbviewer.ui.visualLength
 import kotlinx.coroutines.Dispatchers
@@ -112,6 +129,8 @@ private fun detectNumeric(samples: List<String?>): Boolean {
 /**
  * Monospace table with a pinned header, one shared horizontal scroll offset for header and rows,
  * optional row selection and a tap target that opens the full row.
+ *
+ * 增强版：支持列排序、筛选、固定列、调整列宽
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -126,10 +145,25 @@ fun DataGrid(
     onRowLongClick: ((GridRow) -> Unit)? = null,
     emptyText: String = "没有可显示的数据",
     onScrollNearBottom: (() -> Unit)? = null,
+    // 新增交互功能参数
+    sortColumn: String? = null,
+    sortDirection: SortDirection = SortDirection.NONE,
+    pinnedColumns: Set<String> = emptySet(),
+    columnWidths: Map<String, Float> = emptyMap(),
+    columnFilters: Map<String, com.example.dbviewer.data.ColumnFilter> = emptyMap(),
+    onSort: ((String) -> Unit)? = null,
+    onTogglePin: ((String) -> Unit)? = null,
+    onFilter: ((String, FilterType, String) -> Unit)? = null,
+    onResizeColumn: ((String, Float) -> Unit)? = null,
 ) {
     val horizontal = rememberScrollState()
     val listState = rememberLazyListState()
     val allSelected = rows.isNotEmpty() && rows.all { it.position in selection }
+    var filterDialogColumn by remember { mutableStateOf<String?>(null) }
+
+    // 分离固定列和可滚动列
+    val pinnedCols = columns.filter { it.title in pinnedColumns }
+    val scrollableCols = columns.filterNot { it.title in pinnedColumns }
 
     // 检测滚动位置，当接近底部时触发预加载
     LaunchedEffect(listState, rows.size) {
@@ -144,10 +178,15 @@ fun DataGrid(
     }
 
     Column(modifier) {
+        // 表头
         Row(
-            modifier = Modifier.fillMaxWidth().height(HEADER_HEIGHT).background(DbColors.SurfaceElevated).horizontalScroll(horizontal),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(HEADER_HEIGHT)
+                .background(DbColors.SurfaceElevated),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // 选择列
             if (onToggleAll != null) {
                 Box(Modifier.width(SELECTION_WIDTH).fillMaxHeight(), contentAlignment = Alignment.Center) {
                     Checkbox(
@@ -158,9 +197,46 @@ fun DataGrid(
                     )
                 }
             }
-            columns.forEach { column -> HeaderCell(column) }
+
+            // 固定列头
+            pinnedCols.forEach { column ->
+                val customWidth = columnWidths[column.title]?.dp
+                EnhancedHeaderCell(
+                    column = column,
+                    width = customWidth ?: column.width,
+                    isPinned = true,
+                    sortDirection = if (sortColumn == column.title) sortDirection else null,
+                    hasFilter = column.title in columnFilters,
+                    onSort = { onSort?.invoke(column.title) },
+                    onTogglePin = { onTogglePin?.invoke(column.title) },
+                    onFilter = { filterDialogColumn = column.title },
+                    onResize = { delta -> onResizeColumn?.invoke(column.title, delta) }
+                )
+            }
+
+            // 可滚动列头
+            Row(
+                modifier = Modifier.horizontalScroll(horizontal)
+            ) {
+                scrollableCols.forEach { column ->
+                    val customWidth = columnWidths[column.title]?.dp
+                    EnhancedHeaderCell(
+                        column = column,
+                        width = customWidth ?: column.width,
+                        isPinned = false,
+                        sortDirection = if (sortColumn == column.title) sortDirection else null,
+                        hasFilter = column.title in columnFilters,
+                        onSort = { onSort?.invoke(column.title) },
+                        onTogglePin = { onTogglePin?.invoke(column.title) },
+                        onFilter = { filterDialogColumn = column.title },
+                        onResize = { delta -> onResizeColumn?.invoke(column.title, delta) }
+                    )
+                }
+            }
         }
+
         HorizontalDivider(color = DbColors.Divider)
+
         if (rows.isEmpty()) {
             Box(Modifier.fillMaxWidth().height(180.dp), contentAlignment = Alignment.Center) {
                 Text(emptyText, color = DbColors.TextMuted, fontSize = 13.sp)
@@ -184,7 +260,6 @@ fun DataGrid(
                                     else -> Color.Transparent
                                 }
                             )
-                            .horizontalScroll(horizontal)
                             .combinedClickable(
                                 enabled = onRowClick != null || onRowLongClick != null,
                                 onClick = { onRowClick?.invoke(row) },
@@ -192,6 +267,7 @@ fun DataGrid(
                             ),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        // 选择列
                         if (onToggleRow != null) {
                             Box(Modifier.width(SELECTION_WIDTH).fillMaxHeight(), contentAlignment = Alignment.Center) {
                                 Checkbox(
@@ -202,49 +278,53 @@ fun DataGrid(
                                 )
                             }
                         }
-                        columns.forEachIndexed { columnIndex, column -> Cell(row.values.getOrNull(columnIndex), column) }
+
+                        // 固定列单元格
+                        pinnedCols.forEachIndexed { columnIndex, column ->
+                            val dataIndex = columns.indexOf(column)
+                            val customWidth = columnWidths[column.title]?.dp
+                            Cell(row.values.getOrNull(dataIndex), column, customWidth ?: column.width)
+                        }
+
+                        // 可滚动列单元格
+                        Row(modifier = Modifier.horizontalScroll(horizontal)) {
+                            scrollableCols.forEachIndexed { columnIndex, column ->
+                                val dataIndex = columns.indexOf(column)
+                                val customWidth = columnWidths[column.title]?.dp
+                                Cell(row.values.getOrNull(dataIndex), column, customWidth ?: column.width)
+                            }
+                        }
                     }
                     HorizontalDivider(color = DbColors.Divider)
                 }
             }
         }
     }
-}
 
-@Composable
-private fun HeaderCell(column: GridColumn) {
-    Column(
-        modifier = Modifier.width(column.width).fillMaxHeight().padding(horizontal = 12.dp),
-        verticalArrangement = Arrangement.Center,
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (column.primaryKey) {
-                Icon(Icons.Default.Key, contentDescription = "主键", modifier = Modifier.size(11.dp), tint = DbColors.Key)
-                Spacer(Modifier.width(4.dp))
+    // 筛选对话框
+    filterDialogColumn?.let { columnName ->
+        val currentFilter = columnFilters[columnName]
+        FilterDialog(
+            columnName = columnName,
+            currentFilter = currentFilter?.value ?: "",
+            currentFilterType = currentFilter?.filterType ?: FilterType.CONTAINS,
+            onDismiss = { filterDialogColumn = null },
+            onConfirm = { filterType, value ->
+                onFilter?.invoke(columnName, filterType, value)
             }
-            Text(
-                text = column.title,
-                fontFamily = FontFamily.Monospace,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium,
-                color = DbColors.TextPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        Text(
-            text = column.type?.uppercase() ?: "",
-            fontFamily = FontFamily.Monospace,
-            fontSize = 9.sp,
-            color = DbColors.TextMuted,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
         )
     }
 }
 
 @Composable
-private fun Cell(value: String?, column: GridColumn) {
+private fun gridCheckboxColors() = CheckboxDefaults.colors(
+    checkedColor = DbColors.Accent,
+    uncheckedColor = DbColors.TextMuted,
+    checkmarkColor = Color(0xFF08101F),
+)
+
+@Composable
+private fun Cell(value: String?, column: GridColumn, width: Dp = column.width) {
     val isNull = value == null
     val textColor = when {
         isNull -> DbColors.Null
@@ -254,7 +334,7 @@ private fun Cell(value: String?, column: GridColumn) {
 
     Box(
         modifier = Modifier
-            .width(column.width)
+            .width(width)
             .padding(horizontal = 12.dp)
             .drawWithCache {
                 // 缓存绘制操作，避免每次重组都重新测量
@@ -273,9 +353,241 @@ private fun Cell(value: String?, column: GridColumn) {
     }
 }
 
+/**
+ * 增强版列头单元格，支持排序、筛选、固定、调整宽度
+ */
 @Composable
-private fun gridCheckboxColors() = CheckboxDefaults.colors(
-    checkedColor = DbColors.Accent,
-    uncheckedColor = DbColors.TextMuted,
-    checkmarkColor = Color(0xFF08101F),
-)
+private fun EnhancedHeaderCell(
+    column: GridColumn,
+    width: Dp,
+    isPinned: Boolean,
+    sortDirection: SortDirection?,
+    hasFilter: Boolean,
+    onSort: () -> Unit,
+    onTogglePin: () -> Unit,
+    onFilter: () -> Unit,
+    onResize: (Float) -> Unit,
+) {
+    var showMenu by remember { mutableStateOf(false) }
+    var dragOffset by remember { mutableStateOf(0f) }
+
+    Box(
+        modifier = Modifier
+            .width((width.value + dragOffset).dp.coerceAtLeast(50.dp))
+            .fillMaxHeight()
+            .background(if (isPinned) DbColors.SurfaceHigh else DbColors.SurfaceElevated)
+    ) {
+        // 列头内容
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight()
+                .clickable { onSort() }
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // 固定列图标
+                if (isPinned) {
+                    Icon(
+                        imageVector = Icons.Default.PushPin,
+                        contentDescription = "已固定",
+                        modifier = Modifier.size(10.dp),
+                        tint = DbColors.Accent
+                    )
+                    Spacer(Modifier.width(4.dp))
+                }
+
+                // 主键图标
+                if (column.primaryKey) {
+                    Icon(Icons.Default.Key, contentDescription = "主键", modifier = Modifier.size(11.dp), tint = DbColors.Key)
+                    Spacer(Modifier.width(4.dp))
+                }
+
+                // 列名
+                Text(
+                    text = column.title,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = DbColors.TextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+
+                // 排序指示器
+                if (sortDirection != null && sortDirection != SortDirection.NONE) {
+                    Spacer(Modifier.width(4.dp))
+                    Icon(
+                        imageVector = if (sortDirection == SortDirection.ASC) Icons.Default.ArrowUpward else Icons.Default.ArrowDownward,
+                        contentDescription = "排序",
+                        modifier = Modifier.size(13.dp),
+                        tint = DbColors.Accent
+                    )
+                }
+
+                // 筛选指示器
+                if (hasFilter) {
+                    Spacer(Modifier.width(4.dp))
+                    Icon(
+                        imageVector = Icons.Default.FilterAlt,
+                        contentDescription = "已筛选",
+                        modifier = Modifier.size(13.dp),
+                        tint = DbColors.Accent
+                    )
+                }
+
+                // 更多菜单
+                Spacer(Modifier.width(4.dp))
+                Box {
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "更多",
+                        modifier = Modifier
+                            .size(15.dp)
+                            .clickable { showMenu = true },
+                        tint = DbColors.TextSecondary
+                    )
+
+                    DropdownMenu(
+                        expanded = showMenu,
+                        onDismissRequest = { showMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text(if (isPinned) "取消固定" else "固定列", fontSize = 13.sp) },
+                            onClick = {
+                                onTogglePin()
+                                showMenu = false
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("筛选...", fontSize = 13.sp) },
+                            onClick = {
+                                onFilter()
+                                showMenu = false
+                            }
+                        )
+                    }
+                }
+            }
+
+            // 类型标签
+            Text(
+                text = column.type?.uppercase() ?: "",
+                fontFamily = FontFamily.Monospace,
+                fontSize = 9.sp,
+                color = DbColors.TextMuted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+
+        // 拖拽调整列宽手柄
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .width(6.dp)
+                .fillMaxHeight()
+                .pointerInput(Unit) {
+                    detectHorizontalDragGestures(
+                        onDragEnd = {
+                            if (dragOffset != 0f) {
+                                onResize(dragOffset)
+                                dragOffset = 0f
+                            }
+                        },
+                        onHorizontalDrag = { _, dragAmount ->
+                            val delta = dragAmount / density
+                            val newWidth = width.value + dragOffset + delta
+                            if (newWidth >= 50) {
+                                dragOffset += delta
+                            }
+                        }
+                    )
+                }
+                .background(Color.Transparent)
+        )
+    }
+}
+
+/**
+ * 列筛选对话框
+ */
+@Composable
+private fun FilterDialog(
+    columnName: String,
+    currentFilter: String,
+    currentFilterType: FilterType,
+    onDismiss: () -> Unit,
+    onConfirm: (FilterType, String) -> Unit,
+) {
+    var filterText by remember { mutableStateOf(currentFilter) }
+    var filterType by remember { mutableStateOf(currentFilterType) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("筛选: $columnName", fontSize = 16.sp) },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                // 筛选类型选择
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterType.values().forEach { type ->
+                        FilterChip(
+                            selected = filterType == type,
+                            onClick = { filterType = type },
+                            label = {
+                                Text(
+                                    text = when (type) {
+                                        FilterType.CONTAINS -> "包含"
+                                        FilterType.NOT_CONTAINS -> "不包含"
+                                    },
+                                    fontSize = 13.sp
+                                )
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+
+                // 筛选值输入
+                OutlinedTextField(
+                    value = filterText,
+                    onValueChange = { filterText = it },
+                    label = { Text("筛选值", fontSize = 13.sp) },
+                    placeholder = { Text("输入要筛选的内容", fontSize = 13.sp) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = DbColors.Accent,
+                        focusedLabelColor = DbColors.Accent,
+                        cursorColor = DbColors.Accent,
+                    )
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    onConfirm(filterType, filterText.trim())
+                    onDismiss()
+                }
+            ) {
+                Text("确定", color = DbColors.Accent)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消", color = DbColors.TextSecondary)
+            }
+        },
+        containerColor = DbColors.Surface,
+        titleContentColor = DbColors.TextPrimary,
+        textContentColor = DbColors.TextPrimary,
+    )
+}

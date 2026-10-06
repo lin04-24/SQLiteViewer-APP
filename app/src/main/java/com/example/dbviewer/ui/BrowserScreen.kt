@@ -425,6 +425,22 @@ private fun DataTab(
                     }
                     ToolbarAction(Icons.Default.Close, "取消选择") { vm.clearSelection() }
                 } else {
+                    // 显示筛选/排序状态
+                    if (state.hasActiveFilters || state.hasActiveSort) {
+                        Text(
+                            text = buildString {
+                                if (state.hasActiveSort) append("已排序 ")
+                                if (state.hasActiveFilters) append("已筛选 ")
+                            }.trim(),
+                            fontSize = 11.sp,
+                            color = DbColors.Accent,
+                            modifier = Modifier.padding(horizontal = 10.dp)
+                        )
+                        ToolbarAction(Icons.Default.Close, "清除筛选") {
+                            vm.clearAllFilters()
+                        }
+                    }
+
                     ExportMenu(
                         enabled = state.rows.isNotEmpty(),
                         onCsv = { requestExport("csv", buildCsv(names, visibleRows(false).map { it.values }), "text/csv") },
@@ -455,6 +471,16 @@ private fun DataTab(
                 onRowLongClick = { clipboard.setText(AnnotatedString(buildJson(names, listOf(it.values)))) },
                 emptyText = "该表没有数据",
                 onScrollNearBottom = { vm.onScrollNearBottom() },
+                // 新增交互功能参数
+                sortColumn = state.sortColumn,
+                sortDirection = state.sortDirection,
+                pinnedColumns = state.pinnedColumns,
+                columnWidths = state.columnWidths,
+                columnFilters = state.columnFilters,
+                onSort = vm::toggleSort,
+                onTogglePin = vm::togglePinColumn,
+                onFilter = vm::setColumnFilter,
+                onResizeColumn = vm::setColumnWidth,
             )
         }
         HorizontalDivider(color = DbColors.Divider)
