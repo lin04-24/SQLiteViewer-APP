@@ -11,6 +11,7 @@ import com.example.dbviewer.data.DbSession
 import com.example.dbviewer.data.DdlItem
 import com.example.dbviewer.data.GridRow
 import com.example.dbviewer.data.IndexInfo
+import com.example.dbviewer.data.PageDirection
 import com.example.dbviewer.data.PagedRows
 import com.example.dbviewer.data.RowCount
 import kotlinx.coroutines.Dispatchers
@@ -38,6 +39,10 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
         val pageIndex: Int = 0,
         val pageSize: Int = DEFAULT_PAGE_SIZE,
         val hasNextPage: Boolean = false,
+        val hasPreviousPage: Boolean = false,
+        val firstIdOnPage: Long? = null,
+        val lastIdOnPage: Long? = null,
+        val usingKeysetPagination: Boolean = false,
         val selection: Set<Int> = emptySet(),
         val loading: Boolean = false,
         val schemaLoading: Boolean = false,
@@ -120,6 +125,10 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
             totalRows = 0L,
             totalExact = true,
             hasNextPage = false,
+            hasPreviousPage = false,
+            firstIdOnPage = null,
+            lastIdOnPage = null,
+            usingKeysetPagination = false,
             schemaLoading = true,
             loading = true,
             error = null,
@@ -135,6 +144,8 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
                     page = session.pageAt(table, 0, pageSize),
                 )
             }.onSuccess { snapshot ->
+                val firstId = snapshot.page.rows.firstOrNull()?.id
+                val lastId = snapshot.page.rows.lastOrNull()?.id
                 _state.value = _state.value.copy(
                     columns = snapshot.columns,
                     indexes = snapshot.indexes,
@@ -143,6 +154,10 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
                     totalExact = snapshot.count.exact,
                     rows = snapshot.page.rows,
                     hasNextPage = snapshot.page.hasMore,
+                    hasPreviousPage = false,
+                    firstIdOnPage = firstId,
+                    lastIdOnPage = lastId,
+                    usingKeysetPagination = snapshot.page.usedKeyset,
                     schemaLoading = false,
                     loading = false,
                 )
@@ -152,7 +167,22 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
 
     fun clearTableSelection() {
         gridJob?.cancel()
-        _state.value = _state.value.copy(selectedTable = null, columns = emptyList(), indexes = emptyList(), ddl = emptyList(), rows = emptyList(), selection = emptySet(), pageIndex = 0, totalRows = 0L, hasNextPage = false, loading = false)
+        _state.value = _state.value.copy(
+            selectedTable = null,
+            columns = emptyList(),
+            indexes = emptyList(),
+            ddl = emptyList(),
+            rows = emptyList(),
+            selection = emptySet(),
+            pageIndex = 0,
+            totalRows = 0L,
+            hasNextPage = false,
+            hasPreviousPage = false,
+            firstIdOnPage = null,
+            lastIdOnPage = null,
+            usingKeysetPagination = false,
+            loading = false
+        )
     }
 
     fun loadPage(index: Int) {
@@ -164,7 +194,19 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
         _state.value = _state.value.copy(loading = true, pageIndex = target, selection = emptySet(), error = null)
         gridJob = viewModelScope.launch(Dispatchers.IO) {
             runCatching { session.pageAt(table, target * pageSize, pageSize) }
-                .onSuccess { page -> _state.value = _state.value.copy(rows = page.rows, hasNextPage = page.hasMore, loading = false) }
+                .onSuccess { page ->
+                    val firstId = page.rows.firstOrNull()?.id
+                    val lastId = page.rows.lastOrNull()?.id
+                    _state.value = _state.value.copy(
+                        rows = page.rows,
+                        hasNextPage = page.hasMore,
+                        hasPreviousPage = target > 0,
+                        firstIdOnPage = firstId,
+                        lastIdOnPage = lastId,
+                        usingKeysetPagination = page.usedKeyset,
+                        loading = false
+                    )
+                }
                 .onFailure { _state.value = _state.value.copy(loading = false, error = it.message ?: "无法读取数据") }
         }
     }
@@ -181,18 +223,110 @@ class DbViewModel(private val repo: DbRepository) : ViewModel() {
                 val page: PagedRows = session.pageAt(table, state.pageIndex * state.pageSize, state.pageSize)
                 count to page
             }.onSuccess { (count, page) ->
-                _state.value = _state.value.copy(totalRows = count.value, totalExact = count.exact, rows = page.rows, hasNextPage = page.hasMore, loading = false)
+                val firstId = page.rows.firstOrNull()?.id
+                val lastId = page.rows.lastOrNull()?.id
+                _state.value = _state.value.copy(
+                    totalRows = count.value,
+                    totalExact = count.exact,
+                    rows = page.rows,
+                    hasNextPage = page.hasMore,
+                    hasPreviousPage = state.pageIndex > 0,
+                    firstIdOnPage = firstId,
+                    lastIdOnPage = lastId,
+                    usingKeysetPagination = page.usedKeyset,
+                    loading = false
+                )
             }.onFailure { _state.value = _state.value.copy(loading = false, error = it.message ?: "刷新失败") }
         }
     }
 
-    fun nextPage() { if (_state.value.hasNextPage) loadPage(_state.value.pageIndex + 1) }
+    fun nextPage() {
+        if (!_state.value.hasNextPage) return
+        val session = _state.value.session ?: return
+        val table = _state.value.selectedTable ?: return
+        val state = _state.value
 
-    fun previousPage() { if (_state.value.pageIndex > 0) loadPage(_state.value.pageIndex - 1) }
+        // Use Keyset Pagination if available
+        if (state.usingKeysetPagination && state.lastIdOnPage != null) {
+            gridJob?.cancel()
+            _state.value = state.copy(loading = true, selection = emptySet(), error = null, pageIndex = state.pageIndex + 1)
+            gridJob = viewModelScope.launch(Dispatchers.IO) {
+                runCatching { session.pageAt(table, (state.pageIndex + 1) * state.pageSize, state.pageSize, state.lastIdOnPage, PageDirection.NEXT) }
+                    .onSuccess { page ->
+                        val firstId = page.rows.firstOrNull()?.id
+                        val lastId = page.rows.lastOrNull()?.id
+                        _state.value = _state.value.copy(
+                            rows = page.rows,
+                            hasNextPage = page.hasMore,
+                            hasPreviousPage = true,
+                            firstIdOnPage = firstId,
+                            lastIdOnPage = lastId,
+                            loading = false
+                        )
+                    }
+                    .onFailure { _state.value = _state.value.copy(loading = false, error = it.message ?: "无法读取数据") }
+            }
+        } else {
+            loadPage(state.pageIndex + 1)
+        }
+    }
 
-    fun firstPage() { if (_state.value.pageIndex > 0) loadPage(0) }
+    fun previousPage() {
+        if (!_state.value.hasPreviousPage) return
+        val session = _state.value.session ?: return
+        val table = _state.value.selectedTable ?: return
+        val state = _state.value
 
-    fun lastPage() { loadPage((_state.value.pageCount - 1).coerceAtLeast(0)) }
+        // Use Keyset Pagination if available
+        if (state.usingKeysetPagination && state.firstIdOnPage != null && state.pageIndex > 0) {
+            gridJob?.cancel()
+            _state.value = state.copy(loading = true, selection = emptySet(), error = null, pageIndex = state.pageIndex - 1)
+            gridJob = viewModelScope.launch(Dispatchers.IO) {
+                runCatching { session.pageAt(table, (state.pageIndex - 1) * state.pageSize, state.pageSize, state.firstIdOnPage, PageDirection.PREVIOUS) }
+                    .onSuccess { page ->
+                        val firstId = page.rows.firstOrNull()?.id
+                        val lastId = page.rows.lastOrNull()?.id
+                        _state.value = _state.value.copy(
+                            rows = page.rows,
+                            hasNextPage = true,
+                            hasPreviousPage = state.pageIndex > 1,
+                            firstIdOnPage = firstId,
+                            lastIdOnPage = lastId,
+                            loading = false
+                        )
+                    }
+                    .onFailure { _state.value = _state.value.copy(loading = false, error = it.message ?: "无法读取数据") }
+            }
+        } else {
+            loadPage(state.pageIndex - 1)
+        }
+    }
+
+    fun firstPage() {
+        if (_state.value.pageIndex > 0) {
+            // Reset to first page, clear keyset state
+            _state.value = _state.value.copy(
+                firstIdOnPage = null,
+                lastIdOnPage = null,
+                usingKeysetPagination = false
+            )
+            loadPage(0)
+        }
+    }
+
+    fun lastPage() {
+        val state = _state.value
+        // Last page navigation is not efficient with Keyset Pagination
+        // Fall back to OFFSET for this operation
+        if (state.usingKeysetPagination) {
+            _state.value = state.copy(
+                firstIdOnPage = null,
+                lastIdOnPage = null,
+                usingKeysetPagination = false
+            )
+        }
+        loadPage((state.pageCount - 1).coerceAtLeast(0))
+    }
 
     fun setPageSize(size: Int) {
         if (size == _state.value.pageSize) return

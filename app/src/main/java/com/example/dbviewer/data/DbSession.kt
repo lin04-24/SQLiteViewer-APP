@@ -60,18 +60,33 @@ class DbSession private constructor(private val db: SQLiteDatabase, val file: Fi
     }
 
     /**
-     * Reads one page of rows using LIMIT/OFFSET so the browser can show "1-100 of N" and jump to any page.
-     * Column list, row identity and ORDER BY are derived from the table definition:
-     * an INTEGER PRIMARY KEY is used as the row identity when present, otherwise the implicit rowid.
+     * Reads one page of rows using Keyset Pagination (WHERE id > lastId) when possible for optimal performance,
+     * or falls back to LIMIT/OFFSET for tables without suitable primary keys.
+     * Keyset pagination avoids scanning millions of rows when navigating large tables.
      */
-    fun pageAt(table: String, offset: Int, limit: Int): PagedRows {
+    fun pageAt(table: String, offset: Int, limit: Int, lastSeenId: Long? = null, direction: PageDirection = PageDirection.NEXT): PagedRows {
         val plans = columnPlan(table)
         require(plans.isNotEmpty()) { "Table has no readable columns" }
         val projection = plans.joinToString(", ") { "${it.expression} AS ${quote(it.name)}" }
-        val safeOffset = offset.coerceAtLeast(0)
-        val sql = "SELECT $projection FROM ${quote(table)}${orderClause(plans)} LIMIT ${limit + 1} OFFSET $safeOffset"
+        val identityPlan = plans.firstOrNull { it.isIdentity }
+
+        // Use Keyset Pagination if we have an INTEGER PRIMARY KEY and are navigating sequentially
+        val keysetCursor = identityPlan?.let { plan -> lastSeenId?.let { plan to it } }
+
+        val sql = if (keysetCursor != null) {
+            val (keysetPlan, seenId) = keysetCursor
+            val operator = if (direction == PageDirection.NEXT) ">" else "<"
+            val order = if (direction == PageDirection.NEXT) "ASC" else "DESC"
+            "SELECT $projection FROM ${quote(table)} WHERE ${keysetPlan.expression} $operator $seenId ORDER BY ${keysetPlan.expression} $order LIMIT ${limit + 1}"
+        } else {
+            // Fallback to OFFSET pagination for tables without primary key or first page
+            val safeOffset = offset.coerceAtLeast(0)
+            "SELECT $projection FROM ${quote(table)}${orderClause(plans)} LIMIT ${limit + 1} OFFSET $safeOffset"
+        }
+
         val visible = plans.withIndex().filter { !it.value.internal }
         val identityIndex = plans.indexOfFirst { it.isIdentity }
+
         db.rawQuery(sql, null).use { c ->
             val rows = ArrayList<GridRow>(limit)
             var hasMore = false
@@ -80,10 +95,14 @@ class DbSession private constructor(private val db: SQLiteDatabase, val file: Fi
                 if (index == limit) { hasMore = true; break }
                 val values = visible.map { cellText(it.value, c, it.index) }
                 val id = if (identityIndex >= 0 && c.getType(identityIndex) == Cursor.FIELD_TYPE_INTEGER) c.getLong(identityIndex) else null
-                rows += GridRow(position = safeOffset + index, id = id, values = values)
+                rows += GridRow(position = offset + index, id = id, values = values)
                 index++
             }
-            return PagedRows(rows, hasMore)
+            // Reverse rows if we queried backwards
+            val finalRows = if (keysetCursor != null && direction == PageDirection.PREVIOUS) rows.reversed() else rows
+            // Keep the capability flag set for the initial OFFSET page as well. The ViewModel
+            // uses it to switch the next sequential navigation request to keyset pagination.
+            return PagedRows(finalRows, hasMore, identityPlan != null)
         }
     }
 
@@ -173,9 +192,11 @@ class DbSession private constructor(private val db: SQLiteDatabase, val file: Fi
     }
 }
 
+enum class PageDirection { NEXT, PREVIOUS }
+
 data class DbObject(val kind: String, val name: String)
 data class GridRow(val position: Int, val id: Long?, val values: List<String?>)
-data class PagedRows(val rows: List<GridRow>, val hasMore: Boolean)
+data class PagedRows(val rows: List<GridRow>, val hasMore: Boolean, val usedKeyset: Boolean = false)
 data class QueryResult(val columns: List<String>, val rows: List<List<String?>>, val hasMore: Boolean)
 data class DdlItem(val name: String, val kind: String, val sql: String)
 data class ColumnInfo(val name: String?, val type: String?, val notNull: Boolean, val defaultValue: String?, val primaryKeyOrder: Int, val hidden: Int = 0)

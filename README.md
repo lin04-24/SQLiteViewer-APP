@@ -2,7 +2,7 @@
 
 一个完全离线运行的 Android SQLite 数据库查看器，面向手机和平板设备。应用通过系统文件选择器、系统“打开方式”或分享接收 `.db` 文件，以只读方式打开并浏览数据库结构、表数据和 SQL 查询结果。
 
-当前版本：`v0.1`  
+当前版本：`v0.2`  
 最低系统：Android 8.0（API 26）  
 技术栈：Kotlin、Jetpack Compose、Material 3、Navigation Compose
 
@@ -13,6 +13,8 @@
 - 对内容提供方以流式方式复制到应用缓存目录，再使用 Android 原生 SQLite 只读连接打开；关闭会话时释放连接并删除临时文件。
 - 浏览表、视图、索引和触发器，查看列类型、NULL 约束、默认值、主键、索引字段、唯一性和 DDL。
 - 数据表采用虚拟化网格，仅加载当前页；默认每页 100 行，可翻页查看百万级数据。
+- 对有 INTEGER PRIMARY KEY 或可用 `rowid` 的表，首屏后使用 Keyset Pagination（`WHERE id > lastId`）进行前后翻页，避免大 OFFSET 扫描；无合适身份列的表自动回退到 LIMIT/OFFSET。
+- Keyset 模式支持连续前进和后退；“最后一页”在该模式下不可用，切换到尾页时自动使用 OFFSET。
 - 对整数主键或 `rowid` 使用稳定排序；BLOB 默认显示字节数，避免把大块二进制内容直接渲染到表格。
 - 支持单元格详情、复制单元格、列宽自适应、横向滚动，以及当前页 CSV/JSON 导出。
 - SQL 编辑器支持只读 `SELECT`、`WITH`/CTE 和受控 `PRAGMA` 查询，结果限制为最多展示 5,000 行，并显示耗时和截断状态。
@@ -68,7 +70,7 @@ app/build/outputs/apk/debug/SQLiteViewer.apk
 
 ## 性能说明与路线
 
-首屏和滚动过程只保留当前数据页及其 UI 虚拟化内容，BLOB 延迟为长度摘要，查询在后台线程串行执行。当前 `v0.1` 表格使用稳定排序结合 `LIMIT/OFFSET`，适合 MVP 的分页浏览；后续版本将针对有索引主键的表加入 keyset pagination，并补充 100 万、500 万和 1,000 万行基准、Baseline Profile、Macrobenchmark、Profiler 和 Perfetto 数据。
+首屏和滚动过程只保留当前数据页及其 UI 虚拟化内容，BLOB 延迟为长度摘要，查询在后台线程串行执行。`v0.2` 针对有 INTEGER PRIMARY KEY 或 `rowid` 的表启用 Keyset Pagination。首屏仍从偏移量 0 读取，之后的连续翻页通过身份列索引定位，避免扫描此前页面；无主键表、复合主键表和尾页跳转保留 LIMIT/OFFSET 回退。实际性能取决于设备、SQLite 数据规模和缓存状态，建议用真实数据库进行基准测试。
 
 ## 隐私
 

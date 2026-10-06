@@ -461,6 +461,8 @@ private fun DataTab(
             pageSize = state.pageSize,
             pageSizes = DbViewModel.PAGE_SIZES,
             hasNext = state.hasNextPage,
+            hasPrevious = state.hasPreviousPage,
+            usingKeysetPagination = state.usingKeysetPagination,
             enabled = !state.loading,
             onPageSize = vm::setPageSize,
             onFirst = vm::firstPage,

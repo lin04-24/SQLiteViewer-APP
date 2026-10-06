@@ -39,8 +39,9 @@ import com.example.dbviewer.ui.formatCount
 import com.example.dbviewer.ui.theme.DbColors
 
 /**
- * Footer of the data browser: visible range, page size and first/previous/next/last navigation,
- * mirroring the layout used by hosted database consoles.
+ * Footer of the data browser: visible range, page size and previous/next navigation.
+ * Supports both Keyset Pagination (for optimal performance on large tables with primary keys)
+ * and traditional OFFSET pagination (fallback for tables without suitable keys).
  */
 @Composable
 fun PaginationBar(
@@ -53,6 +54,8 @@ fun PaginationBar(
     pageSize: Int,
     pageSizes: List<Int>,
     hasNext: Boolean,
+    hasPrevious: Boolean,
+    usingKeysetPagination: Boolean,
     enabled: Boolean,
     onPageSize: (Int) -> Unit,
     onFirst: () -> Unit,
@@ -77,10 +80,10 @@ fun PaginationBar(
         Spacer(Modifier.width(8.dp))
         PageSizeMenu(pageSize, pageSizes, enabled, onPageSize)
         Spacer(Modifier.width(6.dp))
-        NavButton(Icons.Default.FirstPage, "第一页", enabled && pageIndex > 0, onFirst)
-        NavButton(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "上一页", enabled && pageIndex > 0, onPrevious)
+        NavButton(Icons.Default.FirstPage, "第一页", enabled && hasPrevious, onFirst)
+        NavButton(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "上一页", enabled && hasPrevious, onPrevious)
         Text(
-            text = "${pageIndex + 1} / $pageCount",
+            text = if (usingKeysetPagination) "${pageIndex + 1}" else "${pageIndex + 1} / $pageCount",
             fontFamily = FontFamily.Monospace,
             fontSize = 11.sp,
             color = DbColors.TextPrimary,
@@ -88,7 +91,7 @@ fun PaginationBar(
             modifier = Modifier.padding(horizontal = 4.dp),
         )
         NavButton(Icons.AutoMirrored.Filled.KeyboardArrowRight, "下一页", enabled && hasNext, onNext)
-        NavButton(Icons.AutoMirrored.Filled.LastPage, "最后一页", enabled && hasNext, onLast)
+        NavButton(Icons.AutoMirrored.Filled.LastPage, "最后一页", enabled && !usingKeysetPagination && hasNext, onLast)
     }
 }
 
