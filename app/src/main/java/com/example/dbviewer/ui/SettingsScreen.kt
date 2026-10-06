@@ -15,16 +15,20 @@ import androidx.compose.ui.unit.dp
 import com.example.sqliteviewer.BuildConfig
 import com.example.dbviewer.presentation.UpdateState
 import com.example.dbviewer.presentation.UpdateViewModel
+import com.example.dbviewer.ui.theme.ThemeMode
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     updateViewModel: UpdateViewModel,
+    currentThemeMode: ThemeMode,
+    onThemeModeChange: (ThemeMode) -> Unit,
     onNavigateBack: () -> Unit,
     onOpenGitHub: () -> Unit
 ) {
     val updateState by updateViewModel.updateState.collectAsState()
     val autoCheckEnabled by updateViewModel.autoCheckEnabled.collectAsState()
+    var showThemeDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -44,6 +48,47 @@ fun SettingsScreen(
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
         ) {
+            // Appearance Section
+            Text(
+                text = "外观",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(16.dp, 16.dp, 16.dp, 8.dp)
+            )
+
+            HorizontalDivider()
+
+            // Theme Selection
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "主题模式",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Text(
+                        text = when (currentThemeMode) {
+                            ThemeMode.DARK -> "深色"
+                            ThemeMode.LIGHT -> "浅色"
+                            ThemeMode.HIGH_CONTRAST -> "高对比度"
+                            ThemeMode.SYSTEM -> "跟随系统"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                OutlinedButton(onClick = { showThemeDialog = true }) {
+                    Text("更改")
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+
             // Update Settings Section
             Text(
                 text = "更新",
@@ -199,6 +244,91 @@ fun SettingsScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(16.dp)
+            )
+        }
+    }
+
+    // Theme Selection Dialog
+    if (showThemeDialog) {
+        AlertDialog(
+            onDismissRequest = { showThemeDialog = false },
+            title = { Text("选择主题") },
+            text = {
+                Column {
+                    ThemeOption(
+                        title = "深色",
+                        description = "深色界面，适合夜间使用",
+                        selected = currentThemeMode == ThemeMode.DARK,
+                        onClick = {
+                            onThemeModeChange(ThemeMode.DARK)
+                            showThemeDialog = false
+                        }
+                    )
+                    ThemeOption(
+                        title = "浅色",
+                        description = "明亮界面，适合白天使用",
+                        selected = currentThemeMode == ThemeMode.LIGHT,
+                        onClick = {
+                            onThemeModeChange(ThemeMode.LIGHT)
+                            showThemeDialog = false
+                        }
+                    )
+                    ThemeOption(
+                        title = "高对比度",
+                        description = "更高的对比度，提升可读性",
+                        selected = currentThemeMode == ThemeMode.HIGH_CONTRAST,
+                        onClick = {
+                            onThemeModeChange(ThemeMode.HIGH_CONTRAST)
+                            showThemeDialog = false
+                        }
+                    )
+                    ThemeOption(
+                        title = "跟随系统",
+                        description = "根据系统设置自动切换",
+                        selected = currentThemeMode == ThemeMode.SYSTEM,
+                        onClick = {
+                            onThemeModeChange(ThemeMode.SYSTEM)
+                            showThemeDialog = false
+                        }
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showThemeDialog = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun ThemeOption(
+    title: String,
+    description: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        RadioButton(
+            selected = selected,
+            onClick = onClick
+        )
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge
+            )
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }

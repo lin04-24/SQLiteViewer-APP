@@ -118,6 +118,19 @@ fun DbViewerApp(initialUri: Uri?) {
     val showFirstTimeDialog by updateViewModel.showFirstTimeDialog.collectAsState()
     val autoCheckEnabled by updateViewModel.autoCheckEnabled.collectAsState()
 
+    // Theme state
+    val themeModeFlow = preferencesStore.themeMode.collectAsState(initial = "DARK")
+    var currentThemeMode by remember { mutableStateOf(com.example.dbviewer.ui.theme.ThemeMode.DARK) }
+
+    LaunchedEffect(themeModeFlow.value) {
+        currentThemeMode = when (themeModeFlow.value) {
+            "LIGHT" -> com.example.dbviewer.ui.theme.ThemeMode.LIGHT
+            "HIGH_CONTRAST" -> com.example.dbviewer.ui.theme.ThemeMode.HIGH_CONTRAST
+            "SYSTEM" -> com.example.dbviewer.ui.theme.ThemeMode.SYSTEM
+            else -> com.example.dbviewer.ui.theme.ThemeMode.DARK
+        }
+    }
+
     var section by remember { mutableStateOf(ViewerSection.Browse) }
     var pendingExport by remember { mutableStateOf<ExportRequest?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -196,22 +209,21 @@ fun DbViewerApp(initialUri: Uri?) {
         )
     }
 
-    if (showSettings) {
-        SettingsScreen(
-            updateViewModel = updateViewModel,
-            onNavigateBack = { showSettings = false },
-            onOpenGitHub = {
-                val intent = Intent(Intent.ACTION_VIEW).apply {
-                    data = Uri.parse("https://github.com/lin04-24/SQLiteViewer-APP")
+    DbViewerTheme(themeMode = currentThemeMode) {
+        if (showSettings) {
+            SettingsScreen(
+                updateViewModel = updateViewModel,
+                currentThemeMode = currentThemeMode,
+                onThemeModeChange = { mode -> scope.launch { preferencesStore.setThemeMode(mode.name) } },
+                onNavigateBack = { showSettings = false },
+                onOpenGitHub = {
+                    val intent = Intent(Intent.ACTION_VIEW).apply {
+                        data = Uri.parse("https://github.com/lin04-24/SQLiteViewer-APP")
+                    }
+                    context.startActivity(intent)
                 }
-                context.startActivity(intent)
-            }
-        )
-        return
-    }
-
-    DbViewerTheme {
-        Scaffold(
+            )
+        } else Scaffold(
             containerColor = DbColors.Background,
             topBar = {
                 ViewerTopBar(

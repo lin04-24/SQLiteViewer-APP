@@ -53,7 +53,11 @@ import com.example.dbviewer.ui.components.ReadOnlyBadge
 import com.example.dbviewer.ui.components.RowDetailSheet
 import com.example.dbviewer.ui.components.ToolbarAction
 import com.example.dbviewer.ui.components.gridColumnsFromNames
+import com.example.dbviewer.ui.components.SqlEditor
+import com.example.dbviewer.ui.components.SqlTemplateMenu
 import com.example.dbviewer.ui.theme.DbColors
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.FormatAlignLeft
 
 @Composable
 fun QueryScreen(
@@ -65,6 +69,8 @@ fun QueryScreen(
     var detail by remember { mutableStateOf<GridRow?>(null) }
     val clipboard = LocalClipboardManager.current
     var columns by remember { mutableStateOf(emptyList<com.example.dbviewer.ui.components.GridColumn>()) }
+    var showTemplateMenu by remember { mutableStateOf(false) }
+
     LaunchedEffect(state.queryColumns, state.queryRows) {
         columns = gridColumnsFromNames(state.queryColumns, state.queryRows)
     }
@@ -103,19 +109,15 @@ fun QueryScreen(
                 ReadOnlyBadge()
             }
             Spacer(Modifier.height(10.dp))
-            OutlinedTextField(
+            SqlEditor(
                 value = state.sqlDraft,
                 onValueChange = vm::setSqlDraft,
                 modifier = Modifier.fillMaxWidth().height(132.dp),
-                textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.5.sp, color = DbColors.TextPrimary),
-                placeholder = { Text("SELECT * FROM table_name LIMIT 100;", fontFamily = FontFamily.Monospace, fontSize = 12.5.sp, color = DbColors.TextMuted) },
-                shape = RoundedCornerShape(9.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = DbColors.Accent,
-                    unfocusedBorderColor = DbColors.Border,
-                    focusedContainerColor = DbColors.Background,
-                    unfocusedContainerColor = DbColors.Background,
-                ),
+                placeholder = "SELECT * FROM table_name LIMIT 100;",
+                tables = state.tables,
+                onGetColumns = { tableName ->
+                    state.session?.columns(tableName)?.map { it.name ?: "" } ?: emptyList()
+                }
             )
             Spacer(Modifier.height(10.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -128,6 +130,27 @@ fun QueryScreen(
                     Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
                     Text(if (state.queryRunning) "执行中…" else "执行", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                }
+                Spacer(Modifier.width(6.dp))
+                Box {
+                    TextButton(onClick = { showTemplateMenu = true }) {
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("模板", fontSize = 12.sp, color = DbColors.TextSecondary)
+                    }
+                    SqlTemplateMenu(
+                        expanded = showTemplateMenu,
+                        onDismiss = { showTemplateMenu = false },
+                        onSelectTemplate = { template ->
+                            vm.setSqlDraft(template.template)
+                        }
+                    )
+                }
+                Spacer(Modifier.width(6.dp))
+                TextButton(onClick = { vm.formatSql() }) {
+                    Icon(Icons.Default.FormatAlignLeft, contentDescription = null, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("格式化", fontSize = 12.sp, color = DbColors.TextSecondary)
                 }
                 Spacer(Modifier.width(6.dp))
                 TextButton(onClick = { vm.setSqlDraft("") }, enabled = state.sqlDraft.isNotEmpty()) {

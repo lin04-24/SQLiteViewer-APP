@@ -2,7 +2,7 @@
 
 一个完全离线运行的 Android SQLite 数据库查看器，面向手机和平板设备。应用通过系统文件选择器、系统“打开方式”或分享接收 `.db` 文件，以只读方式打开并浏览数据库结构、表数据和 SQL 查询结果。
 
-当前版本：`v2.0`
+当前版本：`v2.1`
 最低系统：Android 8.0（API 26）  
 技术栈：Kotlin、Jetpack Compose、Material 3、Navigation Compose
 
@@ -25,8 +25,11 @@
 - 支持列筛选，可选择包含或不包含文本；筛选条件会转换为只读查询的 `WHERE` 子句。
 - 表格排序、固定列和列宽设置通过 Preferences DataStore 跨会话保存，不上传数据库内容。
 - SQL 编辑器支持只读 `SELECT`、`WITH`/CTE 和受控 `PRAGMA` 查询，结果限制为最多展示 5,000 行，并显示耗时和截断状态。
+- SQL 编辑器提供关键字、字符串、数字和注释语法高亮；内置 14 个基础、连接、聚合、窗口函数、子查询和高级查询模板。
+- SQL 编辑器支持一键格式化，并根据当前数据库表名提供智能补全提示。
 - 查询历史可复用、复制或清空；查询和数据库 IO 在 `Dispatchers.IO` 执行。
 - 深色主题、响应式布局、动态字体和无障碍语义；平板与横屏使用对象列表和内容区域的双栏布局。
+- 外观设置支持深色、浅色、高对比度和跟随系统四种模式；浅色模式使用 `#FAFAFA` 背景，高对比度模式提供超过 WCAG AAA 的文本对比度。
 - 设置页面支持自动更新检查开关、手动检查、版本信息和 GitHub 项目入口；更新检查默认关闭。
 - 应用内更新检查通过 HTTPS 获取 GitHub Releases 的版本号、更新日志和 APK 下载地址；API 限流时自动使用公开 Atom 发布源，不上传用户数据。
 
@@ -67,7 +70,7 @@ app/src/main/java/com/example/dbviewer/
 app/build/outputs/apk/debug/SQLiteViewer.apk
 ```
 
-生成 v2.0 Release APK：
+生成 v2.1 Release APK：
 
 ```powershell
 ./gradlew.bat :app:assembleRelease
@@ -83,25 +86,23 @@ app/build/outputs/apk/release/SQLiteViewer.apk
 
 发布签名配置保存在本地 `keystore.properties` 中，签名文件、本地 SDK 配置和构建产物均已加入 `.gitignore`，不会提交到仓库。可参考 `keystore.properties.example` 配置本地 Release 构建。
 
-## v2.0 发布
+## v2.1 发布
 
 正式 APK 发布在 GitHub Releases：
-<https://github.com/lin04-24/SQLiteViewer-APP/releases/tag/v2.0>
+<https://github.com/lin04-24/SQLiteViewer-APP/releases/tag/v2.1>
 
-v2.0 包含以下更新：
+v2.1 包含以下更新：
 
-- 新增数据表与查询结果列排序，并在数据表读取时生成 `ORDER BY`。
-- 新增最多 3 列固定、拖拽列宽和列宽持久化。
-- 新增包含/不包含文本筛选，并在数据表读取时生成 `WHERE`。
-- 以 `dbPath:tableName` 为键恢复表格偏好设置。
-- Release APK 版本号为 `versionCode 7`、`versionName 2.0`。
+- SQL 编辑器新增语法高亮、14 个 SQL 模板、一键格式化和表名自动补全。
+- 设置页新增浅色、高对比度和跟随系统主题模式，更新无障碍配色。
+- Release APK 版本号为 `versionCode 8`、`versionName 2.1`。
 - Release 资产包含 `SQLiteViewer.apk` 和 `SHA256SUMS` 校验文件。
 
 ## 隐私
 
 应用默认不发起网络请求，不上传数据库或崩溃日志。数据库副本仅在应用缓存目录中用于本地读取，关闭数据库会话后清理。
 
-**更新检查功能（可选）**：v2.0 提供应用内更新检查功能，默认禁用。用户可在设置中启用自动更新检查，启用后应用在启动时向 GitHub Releases 发起单次 HTTPS 请求以检查版本更新，不上传任何用户数据、数据库内容或使用信息。该功能完全可选，用户可随时在设置中禁用。
+**更新检查功能（可选）**：v2.1 提供应用内更新检查功能，默认禁用。用户可在设置中启用自动更新检查，启用后应用在启动时向 GitHub Releases 发起单次 HTTPS 请求以检查版本更新，不上传任何用户数据、数据库内容或使用信息。该功能完全可选，用户可随时在设置中禁用。
 
 ## 许可证
 

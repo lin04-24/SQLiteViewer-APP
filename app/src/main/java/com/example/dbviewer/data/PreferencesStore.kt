@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -15,6 +16,7 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 class PreferencesStore(private val context: Context) {
     private val AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")
     private val LAST_UPDATE_CHECK = longPreferencesKey("last_update_check")
+    private val THEME_MODE = stringPreferencesKey("theme_mode")
     private val tablePreferences = TablePreferencesStore(context)
 
     val autoCheckUpdates: Flow<Boolean> = context.dataStore.data.map { preferences ->
@@ -23,6 +25,10 @@ class PreferencesStore(private val context: Context) {
 
     val lastUpdateCheck: Flow<Long> = context.dataStore.data.map { preferences ->
         preferences[LAST_UPDATE_CHECK] ?: 0L
+    }
+
+    val themeMode: Flow<String> = context.dataStore.data.map { preferences ->
+        preferences[THEME_MODE] ?: "DARK"
     }
 
     suspend fun setAutoCheckUpdates(enabled: Boolean) {
@@ -34,6 +40,12 @@ class PreferencesStore(private val context: Context) {
     suspend fun updateLastCheckTime() {
         context.dataStore.edit { preferences ->
             preferences[LAST_UPDATE_CHECK] = System.currentTimeMillis()
+        }
+    }
+
+    suspend fun setThemeMode(mode: String) {
+        context.dataStore.edit { preferences ->
+            preferences[THEME_MODE] = mode
         }
     }
 

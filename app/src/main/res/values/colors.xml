@@ -1,8 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Matches DbColors in the Compose theme so the window never flashes a light background. -->
+    <!-- Dark theme colors - matches DbColors in the Compose theme so the window never flashes a light background. -->
     <color name="db_background">#FF0F0F0F</color>
     <color name="db_surface">#FF15171A</color>
+
+    <!-- Light theme colors - for when light theme is selected -->
+    <color name="db_background_light">#FFFAFAFA</color>
+    <color name="db_surface_light">#FFFFFFFF</color>
+
     <!-- Adaptive launcher icon background; matches the white backdrop of photo.webp. -->
     <color name="ic_launcher_background">#FFFFFFFF</color>
 </resources>

@@ -529,6 +529,59 @@ class DbViewModel(
 
     fun setSqlDraft(text: String) { _state.value = _state.value.copy(sqlDraft = text) }
 
+    fun formatSql() {
+        val formatted = formatSqlString(_state.value.sqlDraft)
+        _state.value = _state.value.copy(sqlDraft = formatted)
+    }
+
+    private fun formatSqlString(sql: String): String {
+        if (sql.isBlank()) return sql
+
+        val lines = mutableListOf<String>()
+        var currentIndent = 0
+        val indentSize = 2
+
+        // Simple SQL formatter
+        val tokens = sql.split(Regex("\\s+"))
+        var currentLine = StringBuilder()
+
+        tokens.forEach { token ->
+            val upper = token.uppercase()
+            when {
+                upper in setOf("SELECT", "FROM", "WHERE", "GROUP", "ORDER", "HAVING", "LIMIT", "OFFSET") -> {
+                    if (currentLine.isNotEmpty()) {
+                        lines.add(" ".repeat(currentIndent * indentSize) + currentLine.toString().trim())
+                        currentLine.clear()
+                    }
+                    currentLine.append(token).append(" ")
+                }
+                upper in setOf("JOIN", "INNER", "LEFT", "RIGHT", "OUTER") -> {
+                    if (currentLine.isNotEmpty()) {
+                        lines.add(" ".repeat(currentIndent * indentSize) + currentLine.toString().trim())
+                        currentLine.clear()
+                    }
+                    currentLine.append(token).append(" ")
+                }
+                upper == "AND" || upper == "OR" -> {
+                    if (currentLine.isNotEmpty()) {
+                        lines.add(" ".repeat(currentIndent * indentSize) + currentLine.toString().trim())
+                        currentLine.clear()
+                    }
+                    currentLine.append("  ").append(token).append(" ")
+                }
+                else -> {
+                    currentLine.append(token).append(" ")
+                }
+            }
+        }
+
+        if (currentLine.isNotEmpty()) {
+            lines.add(" ".repeat(currentIndent * indentSize) + currentLine.toString().trim())
+        }
+
+        return lines.joinToString("\n").trimEnd()
+    }
+
     fun useHistory(sql: String) { _state.value = _state.value.copy(sqlDraft = sql) }
 
     fun clearHistory() { _state.value = _state.value.copy(history = emptyList()) }
